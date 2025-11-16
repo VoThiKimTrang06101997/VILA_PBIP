@@ -88,7 +88,7 @@ def train(cfg):
     logger.warning(f"Full training dataset size: {len(train_dataset)}")
     logger.warning(f"Full validation dataset size: {len(val_dataset)}")
 
-    max_samples = 50
+    max_samples = 100
     train_dataset = Subset(train_dataset, range(min(max_samples, len(train_dataset))))
     val_dataset = Subset(val_dataset, range(min(max_samples, len(val_dataset))))
     logger.warning(f"Training with {len(train_dataset)} samples (limited to {max_samples})")
@@ -380,7 +380,7 @@ def train(cfg):
     ])
     test_dataset, _ = get_wsss_dataset(cfg)
     logger.warning(f"Full test dataset size: {len(test_dataset)}")
-    max_samples = 50
+    max_samples = 100
     test_dataset = Subset(test_dataset, range(min(max_samples, len(test_dataset))))
     logger.warning(f"Testing with {len(test_dataset)} samples (limited to {max_samples})")
 
@@ -393,7 +393,7 @@ def train(cfg):
         persistent_workers=False
     )
     logger.warning("1. Testing on test dataset...")
-    logger.warning("-" * 50)
+    logger.warning("-" * 100)
 
     test_mIoU, test_mean_dice, test_fw_iu, test_iu_per_class, test_dice_per_class = validate(
         model=model, data_loader=test_loader, cfg=cfg, cls_loss_func=loss_function
@@ -411,8 +411,8 @@ def train(cfg):
         label = f"Class {i}" if i < len(test_dice_per_class) - 1 else "Background"
         logger.warning(f" {label}: {score*100:.4f}")
 
-    logger.warning("2. Generating unified CAMs for 50 trained samples...")
-    logger.warning("-" * 50)
+    logger.warning("2. Generating unified CAMs for 100 trained samples...")
+    logger.warning("-" * 100)
 
     train_cam_loader = DataLoader(
         train_dataset,
@@ -422,7 +422,7 @@ def train(cfg):
         pin_memory=False,
         persistent_workers=False
     )
-    logger.warning(f"Generating unified CAMs for {len(train_dataset)} trained samples (max 50)...")
+    logger.warning(f"Generating unified CAMs for {len(train_dataset)} trained samples (max 100)...")
     results_dir = os.path.join(cfg.work_dir.dir, "Results")
     os.makedirs(results_dir, exist_ok=True)
     logger.warning(f"Output directory: {results_dir}")

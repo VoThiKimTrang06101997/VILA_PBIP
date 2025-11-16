@@ -52,7 +52,7 @@ def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
 
         cams = cams_norm
 
-        cls_label_expanded = np.hstack((cls_label_np, np.ones((cls_label_np.shape[0], 1))))
+        cls_label_expanded = np.hstack((cls_label_np, np.ones((cls_label_np.shape[0], 1))))  # Include background
         logger.debug(f"cam.shape: {cams.shape}, cls_label_expanded.shape: {cls_label_expanded.shape}")
 
         if cams.shape[1] not in [4, 5]:
@@ -81,7 +81,6 @@ def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
                 logger.debug(f"ResNet BG features shape: {batch_info['bg_features'].shape}")
 
         if labels is not None:
-            # Handle invalid label shapes with improved logic
             if labels.dim() <= 1:
                 logger.warning(f"Invalid labels dimension: {labels.dim()}. Reshaping to [batch_size, height, width].")
                 labels = torch.zeros(b, h, w, dtype=torch.long, device='cuda')
@@ -99,6 +98,8 @@ def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
                             start = idx * section_size
                             end = (idx + 1) * section_size if idx < num_active - 1 else h
                             label_map[start:end, :] = c
+                        # Assign background where no foreground
+                        label_map[torch.sum(label_map, dim=0) == 0] = 4
                         labels[i] = label_map.long()
                     else:
                         labels[i] = torch.full((h, w), 4, device='cuda', dtype=torch.long)
@@ -186,8 +187,9 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                     logger.debug(f"cls1 shape: {cls1.shape}, cls_label shape: {cls_label.shape}")
                     cls_loss = cls_loss_func(cls1[:, :4], torch.clamp(cls_label, 0, 1))
                     cls4_acc_check = (torch.sigmoid(cls4[:, :4]) > 0.5).float()
-                    all_cls_acc4 = (cls4_acc_check == cls_label).all(dim=1).float().sum() / cls4_acc_check.shape[0] * 100
-                    avg_cls_acc4 = ((cls4_acc_check == cls_label).sum(dim=0) / cls4_acc_check.shape[0]).mean() * 100
+                    # Compute per-class accuracy
+                    all_cls_acc4 = ((cls4_acc_check == cls_label).float().mean(dim=0) * 100).mean()
+                    avg_cls_acc4 = ((cls4_acc_check == cls_label).float().mean(dim=0) * 100).mean()
                     avg_meter.add({"all_cls_acc4": all_cls_acc4.item(), "avg_cls_acc4": avg_cls_acc4.item(), "cls_loss": cls_loss.item()})
                     logger.debug(f"Updated metrics: all_cls_acc4={all_cls_acc4.item()}, avg_cls_acc4={avg_cls_acc4.item()}, cls_loss={cls_loss.item()}")
 
@@ -289,8 +291,8 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                         logger.error(f"Spatial dimensions mismatch for sample {i} in batch {name}: probs {prob_sample.shape[1:]} vs images {input_sample.shape[:2]}")
                         continue
                     try:
-                        maxconf_crf, crf_probs = crf.process(prob_sample[np.newaxis, :], input_sample[np.newaxis, :].astype(np.uint8))
-                        crf_probs_list.append(crf_probs.squeeze(0))  # Remove batch dimension
+                        maxconf_crf, crf_probs = crf.process(prob_sample[np.newaxis, :], input_sample[np.newaxis, :].astype(np.uint8))  # Ensure 4D input
+                        crf_probs_list.append(crf_probs[0])  # Take the first (and only) batch element
                     except Exception as e:
                         logger.error(f"CRF processing failed for sample {i} in batch {name}: {str(e)}")
                         crf_probs_list.append(prob_sample)
@@ -303,16 +305,17 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
 
                 logger.warning(f"CRF processing applied or fallback used for batch {name}.")
                 logger.debug(f"full_probs_tensor shape: {full_probs_tensor.shape}")
-                if full_probs_tensor.dim() == 5 and full_probs_tensor.size(1) == 1:
-                    full_probs_tensor = full_probs_tensor.squeeze(1)  # Remove extra dimension
-                    logger.debug(f"Adjusted full_probs_tensor shape: {full_probs_tensor.shape}")
                 if full_probs_tensor.dim() != 4 or full_probs_tensor.size(1) != 5:
                     logger.error(f"Invalid full_probs_tensor shape: {full_probs_tensor.shape}. Expected [batch_size, 5, height, width].")
                     continue
                 full_probs_tensor = F.softmax(full_probs_tensor, dim=1)
                 full_probs_tensor = torch.clamp(full_probs_tensor, min=1e-8, max=1.0 - 1e-8)
+
+                # Generate smoother mask using probability map thresholding
+                prob_map = full_probs_tensor.max(dim=1)[0]  # Max probability across classes
                 pred_labels = torch.argmax(full_probs_tensor, dim=1).long().clamp(0, 4).cuda()
-                logger.debug(f"pred_labels shape: {pred_labels.shape}")
+                smooth_mask = (prob_map > 0.5).float() * pred_labels  # Threshold for smoothness
+                logger.debug(f"pred_labels shape: {pred_labels.shape}, smooth_mask shape: {smooth_mask.shape}")
 
                 if labels.dim() <= 1:
                     logger.warning(f"Invalid labels dimension: {labels.dim()}. Reshaping to [batch_size, height, width].")
@@ -331,6 +334,8 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                                 start = idx * section_size
                                 end = (idx + 1) * section_size if idx < num_active - 1 else h
                                 label_map[start:end, :] = c
+                            # Assign background where no foreground
+                            label_map[torch.sum(label_map, dim=0) == 0] = 4
                             labels[i] = label_map.long()
                         else:
                             labels[i] = torch.full((h, w), 4, device='cuda', dtype=torch.long)
@@ -364,7 +369,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
         all_cls_acc4 = avg_meter.pop('all_cls_acc4') if avg_meter.get('all_cls_acc4') is not None else 0.0
         avg_cls_acc4 = avg_meter.pop('avg_cls_acc4') if avg_meter.get('avg_cls_acc4') is not None else 0.0
         cls_loss = avg_meter.pop('cls_loss') if avg_meter.get('cls_loss') is not None else 0.0
-        logger.warning(f"Validation metrics - all_cls_acc4: {all_cls_acc4}, avg_cls_acc4: {avg_cls_acc4}, cls_loss: {cls_loss}")
+        logger.warning(f"Validation metrics - all_cls_acc4: {all_cls_acc4:.2f}, avg_cls_acc4: {avg_cls_acc4:.2f}, cls_loss: {cls_loss}")
 
         if fuse234_matrix.mat1.sum() == 0 and fuse234_matrix.mat2.sum() == 0:
             logger.warning("Confusion matrix is empty. Possible issues with pred_labels or labels alignment.")
@@ -374,8 +379,8 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
         acc_global, acc, iu_per_class, dice_per_class, dice_bg_fg, fw_iu = fuse234_matrix.compute()
         logger.debug(f"Confusion matrix values: {fuse234_matrix.mat1}, acc_global: {acc_global}, iu_per_class: {iu_per_class}")
 
-        mIoU = np.nan_to_num(iu_per_class[:-1].mean() * 100, nan=0.0)
-        mean_dice = np.nan_to_num(dice_per_class[:-1].mean() * 100, nan=0.0)
+        mIoU = np.nan_to_num(iu_per_class.mean() * 100, nan=0.0)
+        mean_dice = np.nan_to_num(dice_per_class.mean() * 100, nan=0.0)
         fw_iu = np.nan_to_num(fw_iu * 100, nan=0.0)
 
         model.train()
@@ -459,7 +464,7 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                         continue
                     try:
                         maxconf_crf, crf_probs = crf.process(prob_sample[np.newaxis, :], input_sample[np.newaxis, :].astype(np.uint8))
-                        crf_probs_list.append(crf_probs.squeeze(0))  # Remove batch dimension
+                        crf_probs_list.append(crf_probs[0])  # Take the first (and only) batch element
                     except Exception as e:
                         logger.error(f"CRF processing failed for sample {i} in batch {name}: {str(e)}")
                         crf_probs_list.append(prob_sample)
@@ -472,16 +477,18 @@ def generate_cam(model=None, data_loader=None, cfg=None):
 
                 logger.warning(f"CRF processing applied or fallback used for batch {name}.")
                 logger.debug(f"full_probs_tensor shape: {full_probs_tensor.shape}")
-                if full_probs_tensor.dim() == 5 and full_probs_tensor.size(1) == 1:
-                    full_probs_tensor = full_probs_tensor.squeeze(1)  # Remove extra dimension
-                    logger.debug(f"Adjusted full_probs_tensor shape: {full_probs_tensor.shape}")
                 if full_probs_tensor.dim() != 4 or full_probs_tensor.size(1) != 5:
                     logger.error(f"Invalid full_probs_tensor shape: {full_probs_tensor.shape}. Expected [batch_size, 5, height, width].")
                     continue
                 full_probs_tensor = F.softmax(full_probs_tensor, dim=1)
                 full_probs_tensor = torch.clamp(full_probs_tensor, min=1e-8, max=1.0 - 1e-8)
+
+                # Generate smoother mask using probability map
+                prob_map = full_probs_tensor.max(dim=1)[0]  # Max probability across classes
                 pred_labels = torch.argmax(full_probs_tensor, dim=1).long().clamp(0, 4).cuda()
-                logger.debug(f"pred_labels shape: {pred_labels.shape}")
+                smooth_mask = F.interpolate(full_probs_tensor.argmax(dim=1, keepdim=True).float(), size=(h, w), mode='bilinear', align_corners=True).squeeze(1)
+                smooth_mask = (smooth_mask * 255).byte()  # Scale to 0-255 for visualization
+                logger.debug(f"pred_labels shape: {pred_labels.shape}, smooth_mask shape: {smooth_mask.shape}")
 
                 img_denorm_tensor = (inputs * std + mean).clamp(0, 1) * 255
                 img_np = img_denorm_tensor.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
@@ -507,8 +514,9 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                     pred_mask_img.save(mask_path)
                     logger.warning(f"Saved mask for {name[i]} at {mask_path}")
 
-                    cam_heatmap = full_probs_tensor[i].cpu().numpy()
-                    cam_heatmap = np.max(cam_heatmap, axis=0)
+                    # Generate heatmap from the maximum probability across classes
+                    cam_heatmap = full_probs_tensor[i].cpu().numpy()  # Shape: [5, 224, 224]
+                    cam_heatmap = np.max(cam_heatmap, axis=0)  # Take max across classes
                     cam_heatmap = (cam_heatmap - cam_heatmap.min()) / (cam_heatmap.max() - cam_heatmap.min() + 1e-6) * 255
                     cam_heatmap = cam_heatmap.astype(np.uint8)
                     cam_heatmap = cv2.applyColorMap(cam_heatmap, cv2.COLORMAP_JET)
@@ -517,6 +525,12 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                     cam_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_cam.png")
                     cam_img.save(cam_path)
                     logger.warning(f"Saved CAM heatmap for {name[i]} at {cam_path}")
+
+                    # Save smooth mask
+                    smooth_mask_img = Image.fromarray(smooth_mask[i].cpu().numpy()).convert('L')
+                    smooth_mask_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_smooth_mask.png")
+                    smooth_mask_img.save(smooth_mask_path)
+                    logger.warning(f"Saved smooth mask for {name[i]} at {smooth_mask_path}")
 
                     sample_count += 1
                     torch.cuda.empty_cache()
@@ -529,4 +543,3 @@ def generate_cam(model=None, data_loader=None, cfg=None):
     model.train()
     torch.cuda.empty_cache()
     return
-

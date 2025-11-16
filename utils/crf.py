@@ -40,14 +40,20 @@ class DenseCRF:
         Apply Dense CRF to refine probability maps.
         
         Args:
-            probs (np.ndarray): Probability maps with shape [batch_size, num_classes, height, width]
-            images (np.ndarray): Input images with shape [batch_size, height, width, 3]
+            probs (np.ndarray): Probability maps with shape [batch_size, num_classes, height, width] or [num_classes, height, width]
+            images (np.ndarray): Input images with shape [batch_size, height, width, 3] or [height, width, 3]
         
         Returns:
             tuple: (maxconf_crf, crf)
                 - maxconf_crf: Argmax of CRF probabilities, shape [batch_size, height, width]
                 - crf: Refined probabilities, shape [batch_size, num_classes, height, width]
         """
+        # Handle both batched and single-sample inputs
+        if probs.ndim == 3:
+            probs = probs[np.newaxis, :]  # Add batch dimension if 3D
+        if images.ndim == 3:
+            images = images[np.newaxis, :]  # Add batch dimension if 3D
+
         # Validate input shapes
         if probs.ndim != 4:
             raise ValueError(f"Expected 4D probs array, got shape {probs.shape}")
@@ -55,8 +61,9 @@ class DenseCRF:
             raise ValueError(f"Expected 4D images array with 3 channels, got shape {images.shape}")
         
         batch_size, num_classes, height, width = probs.shape
-        if images.shape[:3] != (batch_size, height, width):
-            raise ValueError(f"Spatial dimensions mismatch: probs {probs.shape[1:]} vs images {images.shape[:3]}")
+        if images.shape[1:3] != (height, width):
+            logger.warning(f"Spatial dimensions mismatch: resizing images from {images.shape[1:3]} to ({height}, {width})")
+            images = np.array([cv2.resize(img, (width, height), interpolation=cv2.INTER_LINEAR) for img in images])
 
         logger.debug(f"Processing CRF: batch_size={batch_size}, num_classes={num_classes}, height={height}, width={width}")
 
@@ -110,5 +117,4 @@ class DenseCRF:
 
         logger.debug(f"CRF output shapes - maxconf_crf: {maxconf_crf.shape}, crf: {crf.shape}")
         return maxconf_crf, crf
-    
     
