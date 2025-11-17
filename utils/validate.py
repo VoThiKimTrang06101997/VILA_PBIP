@@ -18,11 +18,23 @@ from utils.fgbg_feature import FeatureExtractor, MaskAdapter_DynamicThreshold
 
 logger = logging.getLogger(__name__)
 
+# ===================================================================
+# 1. get_seg_label: Tạo CAM hoàn chỉnh + pseudo-label từ 1 CAM thô
+# ===================================================================
 def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
+    """
+    Input:
+        cams: [B, C, H, W] – CAM thô (có thể 4 hoặc 5 kênh)
+        inputs: ảnh gốc
+        cls_label: [B, 4] – nhãn class-level
+    Output:
+        cam_all: [B, 5, H, W] – CAM đã có background
+        pred_labels: [B, H, W] – pseudo-label
+    """
     with torch.no_grad():
         b, c, h, w = inputs.shape
         cams = cams.cpu().data.numpy()
-        cams = np.maximum(cams, 0)
+        cams = np.maximum(cams, 0) # Loại bỏ giá trị âm
 
         if cams.shape[1] == 0:
             logger.error(f"Empty cams channels: {cams.shape}. Returning default labels.")
@@ -40,7 +52,7 @@ def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
 
         for i in range(b):
             for j in range(num_classes):
-                if cls_label_np[i, j] > 0:
+                if cls_label_np[i, j] > 0:  # Chỉ normalize class hiện diện
                     c_min = np.min(cams[i, j])
                     c_max = np.max(cams[i, j])
                     if c_max > c_min:
@@ -52,6 +64,8 @@ def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
 
         cams = cams_norm
 
+        # ------------------- Thêm background channel -------------------
+        bg_label = 1 - np.any(cls_label_np > 0, axis=1, keepdims=True)  # [B,1]
         cls_label_expanded = np.hstack((cls_label_np, np.ones((cls_label_np.shape[0], 1))))  # Include background
         logger.debug(f"cam.shape: {cams.shape}, cls_label_expanded.shape: {cls_label_expanded.shape}")
 
@@ -63,27 +77,31 @@ def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
             bg_channel = np.zeros((b, 1, cams.shape[2], cams.shape[3]))
             cams = np.concatenate([cams, bg_channel], axis=1)
 
+        # Chỉ giữ lại class có nhãn
         cams = cams * cls_label_expanded[:, :, None, None]
 
         cams = torch.from_numpy(cams).float().to(inputs.device)
         cams = F.interpolate(cams, size=(h, w), mode="bilinear", align_corners=True)
-
+        
+        # Thêm background mạnh hơn: (1 - max_fg)^2
         cam_max = torch.max(cams[:, :-1], dim=1, keepdim=True)[0]
         bg_cam = (1 - cam_max) ** 2
         cam_all = torch.cat([cams[:, :-1], bg_cam], dim=1)
 
         pred_labels = torch.argmax(cam_all, dim=1).clamp(0, 4)
 
+        # Optional: FG/BG feature extraction (dùng trong training)
         if feature_extractor and cls_label is not None:
             batch_info = feature_extractor.process_batch(inputs, cam_all, cls_label)
             if batch_info and batch_info['fg_img_features'] is not None:
                 logger.debug(f"ResNet FG features shape: {batch_info['fg_img_features'].shape}")
                 logger.debug(f"ResNet BG features shape: {batch_info['bg_features'].shape}")
-
+                
+        # Xử lý ground truth label nếu có
         if labels is not None:
             if labels.dim() <= 1:
                 logger.warning(f"Invalid labels dimension: {labels.dim()}. Reshaping to [batch_size, height, width].")
-                labels = torch.zeros(b, h, w, dtype=torch.long, device='cuda')
+                labels = torch.zeros(b, h, w, dtype=torch.long, device='cuda') # default background
                 for i in range(b):
                     active_classes = cls_label[i] > 0
                     class_indices = torch.where(active_classes)[0].cpu().numpy()
@@ -126,6 +144,9 @@ def get_seg_label(cams, inputs, cls_label, labels=None, feature_extractor=None):
 
         return cam_all, pred_labels
 
+# ===================================================================
+# 2. validate: Tính mIoU, Dice, FW-IoU trên validation set
+# ===================================================================
 def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
     model.eval()
     avg_meter = AverageMeter('all_cls_acc4', 'avg_cls_acc4', 'cls_loss')
@@ -134,16 +155,20 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
         logger.error("Validation data_loader is None or empty")
         return 0.0, 0.0, 0.0, [0.0] * (cfg.dataset.cls_num_classes + 1), [0.0] * (cfg.dataset.cls_num_classes + 1)
     logger.warning(f"Validation data_loader length: {len(data_loader)}")
-
+    
+    # ------------------- Chuẩn hóa ảnh -------------------
     MEAN = [0.66791496, 0.47791372, 0.70623304]
     STD = [0.1736589, 0.22564577, 0.19820057]
     std_tensor = torch.tensor(STD, device='cuda').view(1, 3, 1, 1)
     mean_tensor = torch.tensor(MEAN, device='cuda').view(1, 3, 1, 1)
 
+    # ------------------- TTA -------------------
     tta_transform = tta.Compose([
         tta.HorizontalFlip(),
         tta.Multiply(factors=[0.9, 1.0, 1.1])
     ])
+    
+    # ------------------- CRF -------------------
     crf = DenseCRF()
     crf_config_path = os.path.join(cfg.work_dir.dir, "crf_config.npy")
     if not os.path.exists(crf_config_path):
@@ -151,9 +176,11 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
         default_config = np.array([15, 30, 10, 20, 50, 10])
         np.save(crf_config_path, default_config)
     crf.load_config(crf_config_path)
-
+    
+    # ------------------- Feature Extractor -------------------
     mask_adapter = MaskAdapter_DynamicThreshold(alpha=0.5)
     feature_extractor = FeatureExtractor(mask_adapter, clip_size=224, biomedclip_model=model.resnet_model)
+
 
     with torch.no_grad():
         for data in tqdm(data_loader, total=len(data_loader), ncols=100, ascii=" >="):
@@ -168,7 +195,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
             if cls_label.shape[1] != 4:
                 logger.error(f"Invalid cls_label shape: {cls_label.shape}. Expected [batch_size, 4]. Skipping batch.")
                 continue
-
+            # ------------------- Forward chính -------------------
             try:
                 with torch.amp.autocast('cuda'):
                     outputs = model(inputs, labels=cls_label, cfg=cfg)
@@ -177,6 +204,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                         cls1, cam1, cls2, cam2, cls3, cam3, cls4, cam4, l_fea, loss, _, k_list, _x1 = [torch.zeros(1, device=inputs.device) if i == 0 else None for i in range(13)]
                     else:
                         cls1, cam1, cls2, cam2, cls3, cam3, cls4, cam4, l_fea, loss, _, k_list, _x1 = outputs
+                    # Hierarchical merge
                     if isinstance(k_list, (list, ListConfig)):
                         k_list = [int(k) for k in k_list]
                     if sum(k_list) != cfg.dataset.cls_num_classes:
@@ -197,6 +225,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                     cam3 = merge_subclass_cams_to_parent(cam3, k_list, method=cfg.train.merge_test if cfg and hasattr(cfg.train, 'merge_test') else "mean")
                     cam4 = merge_subclass_cams_to_parent(cam4, k_list, method=cfg.train.merge_test if cfg and hasattr(cfg.train, 'merge_test') else "mean")
 
+                    # Non-TTA baseline
                     cam2_all_non_tta, _ = get_seg_label(cam2, inputs, cls_label, labels, feature_extractor)
                     cam2_all_non_tta = cam2_all_non_tta.cuda()
 
@@ -262,7 +291,8 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                 except Exception as e:
                     logger.error(f"Error in model forward with TTA for batch {name}: {str(e)}. Skipping TTA for this batch.")
                     continue
-
+            
+            # Fallback nếu TTA fail
             if not cams2:
                 logger.warning(f"TTA failed for CAM2 in batch {name}. Using non-TTA CAM2.")
                 cams2 = [cam2_all_non_tta]
@@ -273,6 +303,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                 logger.warning(f"TTA failed for CAM4 in batch {name}. Using non-TTA CAM4.")
                 cams4 = [cam4_all_non_tta]
 
+            # ------------------- Fuse multi-scale CAM -------------------
             try:
                 cams2 = torch.stack(cams2, dim=0).mean(dim=0)
                 cams3 = torch.stack(cams3, dim=0).mean(dim=0)
@@ -281,6 +312,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                 fuse234 = 0.3 * cams2 + 0.3 * cams3 + 0.4 * cams4
                 logger.debug(f"Fuse234 shape: {fuse234.shape}, Fuse234 max: {fuse234.max()}, min: {fuse234.min()}")
 
+                # ------------------- CRF Refinement -------------------
                 inputs_np = (inputs * std_tensor + mean_tensor).clamp(0, 1).cpu().numpy()
                 probs_np = F.softmax(fuse234, dim=1).cpu().numpy()
                 crf_probs_list = []
@@ -313,6 +345,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
 
                 # Generate smoother mask using probability map thresholding
                 prob_map = full_probs_tensor.max(dim=1)[0]  # Max probability across classes
+                # ------------------- Final prediction -------------------
                 pred_labels = torch.argmax(full_probs_tensor, dim=1).long().clamp(0, 4).cuda()
                 smooth_mask = (prob_map > 0.5).float() * pred_labels  # Threshold for smoothness
                 logger.debug(f"pred_labels shape: {pred_labels.shape}, smooth_mask shape: {smooth_mask.shape}")
@@ -359,7 +392,8 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                 if pred_labels.shape != labels.shape:
                     logger.error(f"Shape mismatch for batch {name}: pred_labels {pred_labels.shape} vs labels {labels.shape}. Skipping update.")
                     continue
-
+                
+                # Cập nhật metric
                 fuse234_matrix.update(labels.detach().clone(), pred_labels.clone())
 
             except Exception as e:
@@ -376,6 +410,7 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
             logger.debug(f"Last pred_labels shape: {pred_labels.shape if 'pred_labels' in locals() else 'undefined'}, Last labels shape: {labels.shape}")
             return 0.0, 0.0, 0.0, [0.0] * (cfg.dataset.cls_num_classes + 1), [0.0] * (cfg.dataset.cls_num_classes + 1)
 
+        # ------------------- Kết quả Metrics -------------------
         acc_global, acc, iu_per_class, dice_per_class, dice_bg_fg, fw_iu = fuse234_matrix.compute()
         logger.debug(f"Confusion matrix values: {fuse234_matrix.mat1}, acc_global: {acc_global}, iu_per_class: {iu_per_class}")
 
@@ -543,3 +578,5 @@ def generate_cam(model=None, data_loader=None, cfg=None):
     model.train()
     torch.cuda.empty_cache()
     return
+
+

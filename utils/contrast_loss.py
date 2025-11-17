@@ -1,5 +1,3 @@
-# contrast_loss.py (Fixed: Added checks for empty batches, handled division by zero, clamped values.)
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
