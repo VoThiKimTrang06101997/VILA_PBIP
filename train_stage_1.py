@@ -63,12 +63,12 @@ def train(cfg):
         A.HorizontalFlip(p=0.5),
         A.Rotate(limit=30, p=0.5),
         A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2, p=0.5),
-        A.Normalize(mean=[0.66791496, 0.47791372, 0.70623304], std=[0.1736589, 0.22564577, 0.19820057]),
+        A.Normalize(mean=[0.66791496, 0.47791372, 0.70623304], std=[0.1736589, 0.22564577, 0.19815057]),
         ToTensorV2(transpose_mask=True),
     ])
     transform_val = A.Compose([
         A.Resize(224, 224),
-        A.Normalize(mean=[0.66791496, 0.47791372, 0.70623304], std=[0.1736589, 0.22564577, 0.19820057]),
+        A.Normalize(mean=[0.66791496, 0.47791372, 0.70623304], std=[0.1736589, 0.22564577, 0.19815057]),
         ToTensorV2(transpose_mask=True),
     ])
 
@@ -88,7 +88,7 @@ def train(cfg):
     logger.warning(f"Full training dataset size: {len(train_dataset)}")
     logger.warning(f"Full validation dataset size: {len(val_dataset)}")
 
-    max_samples = 100
+    max_samples = 150
     train_dataset = Subset(train_dataset, range(min(max_samples, len(train_dataset))))
     val_dataset = Subset(val_dataset, range(min(max_samples, len(val_dataset))))
     logger.warning(f"Training with {len(train_dataset)} samples (limited to {max_samples})")
@@ -375,12 +375,12 @@ def train(cfg):
     logger.warning("Preparing test dataset...")
     transform_test = A.Compose([
         A.Resize(224, 224),
-        A.Normalize(mean=[0.66791496, 0.47791372, 0.70623304], std=[0.1736589, 0.22564577, 0.19820057]),
+        A.Normalize(mean=[0.66791496, 0.47791372, 0.70623304], std=[0.1736589, 0.22564577, 0.19815057]),
         ToTensorV2(transpose_mask=True),
     ])
     test_dataset, _ = get_wsss_dataset(cfg)
     logger.warning(f"Full test dataset size: {len(test_dataset)}")
-    max_samples = 100
+    max_samples = 150
     test_dataset = Subset(test_dataset, range(min(max_samples, len(test_dataset))))
     logger.warning(f"Testing with {len(test_dataset)} samples (limited to {max_samples})")
 
@@ -393,7 +393,7 @@ def train(cfg):
         persistent_workers=False
     )
     logger.warning("1. Testing on test dataset...")
-    logger.warning("-" * 100)
+    logger.warning("-" * 150)
 
     test_mIoU, test_mean_dice, test_fw_iu, test_iu_per_class, test_dice_per_class = validate(
         model=model, data_loader=test_loader, cfg=cfg, cls_loss_func=loss_function
@@ -411,8 +411,8 @@ def train(cfg):
         label = f"Class {i}" if i < len(test_dice_per_class) - 1 else "Background"
         logger.warning(f" {label}: {score*100:.4f}")
 
-    logger.warning("2. Generating unified CAMs for 100 trained samples...")
-    logger.warning("-" * 100)
+    logger.warning("2. Generating unified CAMs for 150 trained samples...")
+    logger.warning("-" * 150)
 
     train_cam_loader = DataLoader(
         train_dataset,
@@ -422,7 +422,7 @@ def train(cfg):
         pin_memory=False,
         persistent_workers=False
     )
-    logger.warning(f"Generating unified CAMs for {len(train_dataset)} trained samples (max 100)...")
+    logger.warning(f"Generating unified CAMs for {len(train_dataset)} trained samples (max 150)...")
     results_dir = os.path.join(cfg.work_dir.dir, "Results")
     os.makedirs(results_dir, exist_ok=True)
     logger.warning(f"Output directory: {results_dir}")
@@ -464,3 +464,4 @@ if __name__ == "__main__":
     logger.warning(f'Configs: {cfg}')
     set_seed(0)
     train(cfg=cfg)
+    
