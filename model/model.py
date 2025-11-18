@@ -118,6 +118,11 @@ class ClsNetwork(nn.Module):
             "A WSI of Stroma with fibrous tissue and low cellularity.",
             "A WSI of Lymphocyte with small dark clusters and speckled appearance.",
             "A WSI of Necrosis with pale amorphous zones and loss of structure."
+            
+            # "A WSI of Tumor with visually descriptive characteristics of irregularly shaped regions, dense cellularity, heterogeneous staining, and distortion of adjacent structures due to growth, as well as atypical cells, enlarged nuclei, prominent nucleoli, high nuclear-to-cytoplasmic ratio, and mitotic figures."
+            # "A WSI of Stroma with visually descriptive characteristics of fibrous connective tissue, lighter staining, low cellular density, and surrounding or infiltrating tumor areas, as well as elongated fibroblasts, collagen bundles, eosinophilic matrix, blood vessels, and occasional inflammatory cells."
+            # "A WSI of Lymphocyte with visually descriptive characteristics of small dark clusters or infiltrates, often at tumor-stroma interfaces, appearing as speckled blue-purple areas, as well as small round cells, hyperchromatic nuclei, scant cytoplasm, and clustering in immune responses."
+            # "A WSI of Necrosis with visually descriptive characteristics of pale amorphous zones, loss of structure, hypoeosinophilic appearance, and contrast with viable tissue, as well as cellular debris, karyorrhectic nuclei, cytoplasmic remnants, and infiltration by inflammatory cells."
         ]
         clip_model, _, _ = open_clip.create_model_and_transforms('RN50', pretrained='openai')
         self.prompt_learner = PromptLearner(self.text_prompt, clip_model.float())
@@ -135,13 +140,13 @@ class ClsNetwork(nn.Module):
         self.cumsum_k = np.cumsum(self.k_list)  # = số channel trong attention
         
         
-        # Giải thích:  file bcss_label_fea_pro_3333.pkl có shape [12, 512] (có thể là 4 class × 3 subclass mỗi class) nhưng model đang dùng cls_num_classes=4 classes
+        # Giải thích:  file bcss_label_fea_pro_3333.pkl có shape [12, 512] (có thể là 4 class × 3 subclass mỗi class) nhưng model đang dùng cls_num_classes = 4 classes
         
         # ------------------- Learned Prototypes (l_fea) – LOAD + MERGE SUBCLASS -------------------
         self.prototype_feature_dim = prototype_feature_dim
         self.cls_num_classes = cls_num_classes
 
-        # Luôn khởi tạo random trước (an toàn)
+        # Khởi tạo
         self.l_fea = nn.Parameter(
             torch.randn(self.cls_num_classes, self.prototype_feature_dim) * 0.02,
             requires_grad=True
@@ -151,7 +156,7 @@ class ClsNetwork(nn.Module):
 
         # ==== FIX: Load và tự động merge nếu cần ====
         if l_fea_path and str(l_fea_path).strip():
-            # Đường dẫn tuyệt đối để chắc chắn tìm đúng file của bạn
+            # Đường dẫn load file l_fea_path
             proto_path = r"E:\NghienCuu_WSSS\VILA_PBIP\features\image_features\bcss_label_fea_pro_3333.pkl"
             
             if os.path.exists(proto_path):
@@ -420,6 +425,7 @@ class ClsNetwork(nn.Module):
 
         # ------------------- Diversity loss trên l_fea_final -------------------
         # diversity_loss = attention_diversity(l_fea_final.unsqueeze(0).expand(batch_size, -1, -1), _x1, num_heads=8)
+        
         # Project l_fea_final về không gian của _x1 (scale 1, channel=64)
         l_fea_for_diversity = self.prototype_to_diversity(l_fea_final)  # [4, 512] → [4, 64]
         diversity_loss = attention_diversity(l_fea_for_diversity, _x1, num_heads=8)
