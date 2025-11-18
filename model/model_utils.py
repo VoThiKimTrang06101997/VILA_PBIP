@@ -330,23 +330,22 @@ def pt2graph(coords, features, threshold=5000, radius=9):
     )
     return G
 
-def attention_diversity(prototypes: Tensor, features: Tensor, num_heads: int = 8) -> Tensor:
+def attention_diversity(prototypes: torch.Tensor, features: torch.Tensor, num_heads: int = 8) -> torch.Tensor:
+    """
+    prototypes: [num_prototypes, D]   (ví dụ [4, 64])
+    features:   [B, N, D]             (ví dụ [B, 3136, 64])
+    """
     batch_size, num_patches, D = features.shape
     num_prototypes = prototypes.shape[0]
 
-    prototypes = prototypes.squeeze(1).to(features.device)
-    query = prototypes.unsqueeze(0).repeat(batch_size, 1, 1)
-    key = features
-    value = features
+    prototypes = prototypes.unsqueeze(0).expand(batch_size, -1, -1)  # [B, num_prototypes, D]
 
     attn = MultiheadAttention(embed_dim=D, num_heads=num_heads, batch_first=True).to(features.device)
-    attn_output, attn_weights = attn(query, key, value)
+    _, attn_weights = attn(prototypes, features, features)  # [B, num_prototypes, N]
 
-    attn_weights = attn_weights.mean(dim=1)  # Average over heads
+    attn_weights = attn_weights.mean(dim=1)  # avg over heads → [B, N]
     entropy = -torch.sum(attn_weights * torch.log(attn_weights + 1e-8), dim=-1)
-    diversity_loss = -torch.mean(entropy)
-
-    return diversity_loss
+    return -entropy.mean()  # maximize diversity
 
 def pairwise_distances(x: Tensor) -> Tensor:
     bn = x.size(0)

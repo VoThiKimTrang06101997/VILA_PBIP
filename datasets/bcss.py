@@ -135,7 +135,7 @@ class BCSSTrainingDataset(Dataset):
 
 class BCSSTestDataset(Dataset):
     CLASSES = ["TUM", "STR", "LYM", "NEC", "BACK"]
-    PALETTE = {29: 0, 76: 1, 150: 2, 255: 3}
+    PALETTE = {29: 0, 76: 1, 150: 2, 255: 3, 0: 4}  # thêm background
     def __init__(self, img_root="../data/BCSS-WSSS/", split="test", transform=None):
         assert split in ["test", "val"], "split must be one of [test, val]"
         super(BCSSTestDataset, self).__init__()
@@ -201,29 +201,28 @@ class BCSSTestDataset(Dataset):
             return os.path.basename(img_path), img, cls_label, mask
 
     def get_images_and_labels(self):
-        mask_paths = glob.glob(os.path.join(self.img_root, self.split, "mask", "*.png"))
-        logger.info(f"Found {len(mask_paths)} mask files in {os.path.join(self.img_root, self.split, 'mask')}")
+        # Tìm đúng thư mục val/img và val/mask
+        img_dir = os.path.join(self.img_root, self.split, "img")
+        mask_dir = os.path.join(self.img_root, self.split, "mask")
 
-        for mask_path in mask_paths:
-            try:
-                mask = np.array(Image.open(mask_path).convert("L"))
-                if mask is None or mask.size == 0:
-                    logger.warning(f"Skipping invalid mask at {mask_path}")
-                    continue
-                img_name = os.path.basename(mask_path)
-                img_path = os.path.join(self.img_root, self.split, "img", img_name)
-                if os.path.exists(img_path):
-                    img = cv.imread(img_path, cv.IMREAD_UNCHANGED)
-                    if img is None or img.size == 0:
-                        logger.warning(f"Skipping {img_name}: invalid image")
-                        continue
-                    self.img_paths.append(img_path)
-                    self.mask_paths.append(mask_path)
-                else:
-                    logger.warning(f"Image not found for {img_name} at {img_path}")
-            except Exception as e:
-                logger.error(f"Error processing {mask_path}: {str(e)}")
-                continue
+        if not os.path.exists(img_dir):
+            logger.error(f"Image directory not found: {img_dir}")
+            return
+        if not os.path.exists(mask_dir):
+            logger.error(f"Mask directory not found: {mask_dir}")
+            return
+
+        img_paths = glob.glob(os.path.join(img_dir, "*.png"))
+        logger.info(f"Found {len(img_paths)} images in {img_dir}")
+
+        for img_path in img_paths:
+            img_name = os.path.basename(img_path)
+            mask_path = os.path.join(mask_dir, img_name)
+            if os.path.exists(mask_path):
+                self.img_paths.append(img_path)
+                self.mask_paths.append(mask_path)
+            else:
+                logger.warning(f"Missing mask for {img_name}")
 
         logger.info(f"Loaded {len(self.img_paths)} valid {self.split} samples")
 

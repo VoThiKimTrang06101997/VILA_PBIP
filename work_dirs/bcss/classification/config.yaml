@@ -6,11 +6,11 @@ model:
     - 2
     - 2
     - 1
-  label_feature_path: E:\NghienCuu_WSSS\VILA_PBIP\features\image_features\bcss_label_fea_pro_3333.pkl
+  # label_feature_path: E:\NghienCuu_WSSS\VILA_PBIP\features\image_features\bcss_label_fea_pro_3333.pkl
   n_ratio: 0.5
   num_prototypes_per_class: 10
   prototype_feature_dim: 512
-  l_fea_path: default_features
+  l_fea_path: E:\NghienCuu_WSSS\VILA_PBIP\features\image_features\bcss_label_fea_pro_3333.pkl
 
   
   text_prompt:
