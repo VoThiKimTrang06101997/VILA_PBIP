@@ -446,8 +446,8 @@ def generate_cam(model=None, data_loader=None, cfg=None):
     feature_extractor = FeatureExtractor(mask_adapter, clip_size=224, biomedclip_model=model.resnet_model)
 
     with torch.no_grad():
-        for data in tqdm(data_loader, total=min(50, len(data_loader)), ncols=100, ascii=" >="):
-            if sample_count >= 50:
+        for data in tqdm(data_loader, total=min(150, len(data_loader)), ncols=100, ascii=" >="):
+            if sample_count >= 150:
                 break
             name, inputs, cls_label, labels = data
             if inputs is None or cls_label is None or labels is None:
@@ -528,44 +528,67 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                 img_denorm_tensor = (inputs * std + mean).clamp(0, 1) * 255
                 img_np = img_denorm_tensor.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
 
+                                # === LƯU MASK ĐẸP + LOG KHI PHÁT HIỆN LYM/NEC ===
                 PALETTE = [
-                    [255, 0, 0],  # TUM - Red
-                    [0, 255, 0],  # STR - Green
-                    [0, 0, 255],  # LYM - Blue
-                    [153, 0, 255],  # NEC - Purple
-                    [255, 255, 255]  # BACK - White
+                    255, 0, 0,      # 0: TUM - Đỏ rực
+                    0, 255, 0,      # 1: STR - Xanh lá
+                    0, 0, 255,      # 2: LYM - Xanh dương đậm (rõ nhất)
+                    180, 0, 255,    # 3: NEC - Tím đậm (đẹp hơn 153,0,255)
+                    255, 255, 255   # 4: Background - Trắng
                 ]
-                for i in range(b):
-                    if sample_count >= 50:
-                        break
-                    pred_mask = pred_labels[i].cpu().numpy().astype(np.uint8)
-                    if pred_mask.ndim != 2 or pred_mask.shape != (h, w):
-                        logger.error(f"Invalid pred_mask shape for {name[i]}: {pred_mask.shape}. Using zeros.")
-                        pred_mask = np.zeros((h, w), dtype=np.uint8)
-                    pred_mask_img = Image.fromarray(pred_mask).convert('P')
-                    flat_palette = [val for sublist in PALETTE for val in sublist]
-                    pred_mask_img.putpalette(flat_palette)
-                    mask_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_mask.png")
-                    pred_mask_img.save(mask_path)
-                    logger.warning(f"Saved mask for {name[i]} at {mask_path}")
 
-                    # Generate heatmap from the maximum probability across classes
-                    cam_heatmap = full_probs_tensor[i].cpu().numpy()  # Shape: [5, 224, 224]
-                    cam_heatmap = np.max(cam_heatmap, axis=0)  # Take max across classes
-                    cam_heatmap = (cam_heatmap - cam_heatmap.min()) / (cam_heatmap.max() - cam_heatmap.min() + 1e-6) * 255
-                    cam_heatmap = cam_heatmap.astype(np.uint8)
+                for i in range(b):
+                    if sample_count >= 150:  
+                        break
+                    
+                    pred_mask = pred_labels[i].cpu().numpy().astype(np.uint8)
+    
+                    # Tăng độ tương phản cho LYM (class 2) và NEC (class 3)
+                    if 2 in np.unique(pred_mask):
+                        logger.info(f"LYM (blue) detected in {name[i]} - beautiful!")
+                    if 3 in np.unique(pred_mask):
+                        logger.info(f"NEC (purple) detected in {name[i]}")
+
+                    mask_pil = Image.fromarray(pred_mask).convert('P')
+                    mask_pil.putpalette([
+                        255, 0, 0,      # 0: TUM - đỏ
+                        0, 255, 0,      # 1: STR - xanh lá
+                        0, 0, 255,      # 2: LYM - xanh dương (rõ nhất)
+                        180, 0, 255,    # 3: NEC - tím đậm (đẹp hơn 153,0,255)
+                        255, 255, 255   # 4: Background - trắng
+                    ])
+                    mask_pil.save(os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_mask.png"))
+
+                    # pred_mask_np = pred_labels[i].cpu().numpy().astype(np.uint8)
+
+                    # # Kiểm tra và log khi phát hiện LYM hoặc NEC
+                    # unique_classes = np.unique(pred_mask_np)
+                    # if 2 in unique_classes:
+                    #     logger.info(f"LYM (xanh dương) detected in {name[i]} - BEAUTIFUL!")
+                    # if 3 in unique_classes:
+                    #     logger.info(f"NEC (tím) detected in {name[i]}")
+
+                    # # Tạo và lưu mask màu chuẩn
+                    # mask_pil = Image.fromarray(pred_mask_np).convert('P')
+                    # mask_pil.putpalette(PALETTE)
+                    # mask_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_mask.png")
+                    # mask_pil.save(mask_path)
+
+                    # === HEATMAP ĐẸP: JET + overlay lên ảnh gốc ===
+                    cam_fg = full_probs_tensor[i, :4]  # Chỉ lấy 4 class foreground
+                    cam_heatmap = cam_fg.max(dim=0)[0].cpu().numpy()
+                    cam_heatmap = (cam_heatmap - cam_heatmap.min()) / (cam_heatmap.max() - cam_heatmap.min() + 1e-8)
+                    cam_heatmap = (cam_heatmap * 255).astype(np.uint8)
                     cam_heatmap = cv2.applyColorMap(cam_heatmap, cv2.COLORMAP_JET)
                     cam_heatmap = cv2.cvtColor(cam_heatmap, cv2.COLOR_BGR2RGB)
-                    cam_img = Image.fromarray(cam_heatmap)
-                    cam_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_cam.png")
-                    cam_img.save(cam_path)
-                    logger.warning(f"Saved CAM heatmap for {name[i]} at {cam_path}")
 
-                    # Save smooth mask
-                    smooth_mask_img = Image.fromarray(smooth_mask[i].cpu().numpy()).convert('L')
-                    smooth_mask_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_smooth_mask.png")
-                    smooth_mask_img.save(smooth_mask_path)
-                    logger.warning(f"Saved smooth mask for {name[i]} at {smooth_mask_path}")
+                    # Overlay lên ảnh gốc
+                    img_overlay = cv2.addWeighted(img_np[i], 0.6, cam_heatmap, 0.4, 0)
+                    overlay_pil = Image.fromarray(img_overlay)
+                    cam_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_cam.png")
+                    overlay_pil.save(cam_path)
+
+                    logger.info(f"Saved: {name[i]} → mask + beautiful JET overlay CAM")
 
                     sample_count += 1
                     torch.cuda.empty_cache()

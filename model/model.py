@@ -153,52 +153,44 @@ class ClsNetwork(nn.Module):
         )
         trunc_normal_(self.l_fea, std=0.02)
         logger.info(f"Initialized random l_fea [{self.cls_num_classes} x {self.prototype_feature_dim}]")
-
-        # ==== FIX: Load và tự động merge nếu cần ====
-        if l_fea_path and str(l_fea_path).strip():
-            # Đường dẫn load file l_fea_path
-            proto_path = r"E:\NghienCuu_WSSS\VILA_PBIP\features\image_features\bcss_label_fea_pro_3333.pkl"
-            
-            if os.path.exists(proto_path):
-                try:
-                    with open(proto_path, "rb") as f:
-                        info = pkl.load(f)
-                    loaded_feats = info['features'].to(self.device)  # có thể là [12,512] hoặc [4,512]
-                    
-                    # === TỰ ĐỘNG MERGE NẾU LÀ 12 SUBCLASS ===
-                    if loaded_feats.shape[0] == 12 and self.cls_num_classes == 4:
-                        # Giả sử: class 0: 0-2, class 1: 3-5, class 2: 6-8, class 3: 9-11
-                        merged = torch.stack([
-                            loaded_feats[0:3].mean(dim=0),
-                            loaded_feats[3:6].mean(dim=0),
-                            loaded_feats[6:9].mean(dim=0),
-                            loaded_feats[9:12].mean(dim=0)
-                        ])  # [4, 512]
-                        loaded_feats = merged
-                        logger.info(f"Auto-merged 12 subclass prototypes → 4 parent classes from {proto_path}")
-
-                    # Kiểm tra shape cuối cùng
-                    if loaded_feats.shape == (self.cls_num_classes, self.prototype_feature_dim):
-                        self.l_fea.data.copy_(loaded_feats.data)
-                        logger.info(f"Successfully loaded HIGH-QUALITY prototypes from:\n   {proto_path}")
-                    else:
-                        logger.warning(f"Final shape still mismatch {loaded_feats.shape} vs ({self.cls_num_classes}, {self.prototype_feature_dim}) → using random")
-                except Exception as e:
-                    logger.warning(f"Error loading prototype {proto_path}: {e} → using random")
-            else:
-                logger.warning(f"Prototype file NOT FOUND at:\n   {proto_path}\n   → using random initialization")
-        else:
-            logger.info("l_fea_path not provided → using random initialization")
-            
         
-                # ==================== PROJECTOR CHO DIVERSITY LOSS (512 → 64) ====================
-        # _x1 (scale 1 của SegFormer) có channel = 64 → prototype phải cùng chiều mới attention được
+        
+        # ==================== PROJECTOR CHO DIVERSITY LOSS (512 → 64) ====================
         self.prototype_to_diversity = nn.Linear(prototype_feature_dim, self.in_channels[0])  # 512 → 64
         nn.init.normal_(self.prototype_to_diversity.weight, std=0.02)
         nn.init.constant_(self.prototype_to_diversity.bias, 0)
-        logger.info("Added prototype_to_diversity projector: 512 → 64 for diversity loss")
-        # ================================================================================
-        
+        logger.info("Added prototype_to_diversity: 512→64 for diversity loss")
+
+        # ------------------- Learned Prototypes (l_fea) – LOAD ĐÚNG FILE + MERGE 12→4 -------------------
+        self.l_fea = nn.Parameter(torch.randn(self.cls_num_classes, prototype_feature_dim) * 0.02, requires_grad=True)
+        trunc_normal_(self.l_fea, std=0.02)
+
+        proto_path = r"E:\NghienCuu_WSSS\VILA_PBIP\features\image_features\bcss_label_fea_pro_3333.pkl"
+        if os.path.exists(proto_path):
+            try:
+                info = pkl.load(open(proto_path, "rb"))
+                feats = info['features'].to(self.device)
+
+                if feats.shape[0] == 12:  # Auto merge 12 subclass → 4 class
+                    merged = torch.stack([
+                        feats[0:3].mean(0),
+                        feats[3:6].mean(0),
+                        feats[6:9].mean(0),
+                        feats[9:12].mean(0)
+                    ])
+                    self.l_fea.data.copy_(merged.data)
+                    logger.info("LOADED & MERGED bcss_label_fea_pro_3333.pkl → perfect prototypes!")
+                elif feats.shape == (4, prototype_feature_dim):
+                    self.l_fea.data.copy_(feats.data)
+                    logger.info("LOADED perfect 4-class prototypes!")
+                else:
+                    logger.warning("Prototype shape wrong → keep random")
+            except Exception as e:
+                logger.warning(f"Load prototype error: {e}")
+        else:
+            logger.warning("Prototype file not found → using random")
+            
+            
         
         self.total_classes = sum(k_list or [1]*cls_num_classes)
         self.k_list = k_list or [1] * cls_num_classes
@@ -335,16 +327,16 @@ class ClsNetwork(nn.Module):
 
         # ------------------- Add background channel (1 - max)^10-------------------     
         def add_background_cam(cam):
-            # Đảm bảo đúng số class foreground
-            if cam.size(1) != self.cls_num_classes:
-                if cam.size(1) < self.cls_num_classes:
-                    padding = torch.zeros(cam.size(0), self.cls_num_classes - cam.size(1), cam.size(2), cam.size(3), device=cam.device)
-                    cam = torch.cat([cam, padding], dim=1)
-                else:
-                    cam = cam[:, :self.cls_num_classes, :, :]
-            cam_max = torch.max(cam, dim=1, keepdim=True)[0]
-            bg_cam = (1 - cam_max).clamp(min=0.0) ** 10
-            return torch.cat([cam, bg_cam], dim=1)  # [B, 5, H, W]  → 5 channels (4 FG + 1 BG)
+            # Chỉ lấy 4 class foreground
+            fg_cam = cam[:, :4, :, :]  # [B, 4, H, W]
+            cam_max = torch.max(fg_cam, dim=1, keepdim=True)[0]  # max trong 4 class
+            
+            # Background yếu hơn rất nhiều (dùng **20 hoặc clamp)
+            bg_score = torch.clamp(1.0 - cam_max, max=0.3)  # background max 0.3
+            bg_cam = bg_score ** 20  # cực yếu
+            
+            # Ghép lại: 4 FG + 1 BG
+            return torch.cat([fg_cam, bg_cam], dim=1)
 
         cam1 = add_background_cam(cam1)
         cam2 = add_background_cam(cam2)
