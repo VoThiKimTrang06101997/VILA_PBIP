@@ -440,4 +440,3 @@ class ViLa_MIL_Model(nn.Module):
             seg[:, c] = (cams_tensor[:, c] > threshold).float()
         seg[:, -1] = (bg_cam.squeeze(1) > threshold).float()
         return seg
-    

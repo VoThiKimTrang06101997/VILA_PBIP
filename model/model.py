@@ -340,10 +340,34 @@ class ClsNetwork(nn.Module):
         
         # Trong hàm add_background_cam → BỎ HOÀN TOÀN BACKGROUND
         def add_background_cam(cam):
+<<<<<<< HEAD
             # Không thêm background → chỉ giữ 4 class
             return cam[:, :4, :, :]  # Chỉ trả về 4 kênh
         
         
+=======
+            # Chỉ lấy 4 class foreground
+            fg_cam = cam[:, :4, :, :]  # [B, 4, H, W]
+            cam_max = torch.max(fg_cam, dim=1, keepdim=True)[0]  # max trong 4 class
+            
+            # Background yếu hơn rất nhiều (dùng **20 hoặc clamp)
+            bg_score = torch.clamp(1.0 - cam_max, max=0.3)  # background max 0.3
+            bg_cam = bg_score ** 20  # cực yếu
+            
+            # Ghép lại: 4 FG + 1 BG
+            return torch.cat([fg_cam, bg_cam], dim=1) 
+
+        cam1 = add_background_cam(cam1)
+        cam2 = add_background_cam(cam2)
+        cam3 = add_background_cam(cam3)
+        cam4 = add_background_cam(cam4)
+
+        # Kiểm tra an toàn
+        if cam1.size(1) != 5 or cam2.size(1) != 5 or cam3.size(1) != 5 or cam4.size(1) != 5:
+            logger.error(f"Invalid CAM channels: cam1={cam1.size(1)}, cam2={cam2.size(1)}, cam3={cam3.size(1)}, cam4={cam4.size(1)}. Expected 5.")
+            return [torch.zeros(1, device=device)] * 13
+
+>>>>>>> 88f5325ab342253aaedf9e305b1b7bd67dc2eee4
         # ------------------- FG/BG feature extraction-------------------
         batch_info1 = self.feature_extractor.process_batch(x, cam1, labels) if self.l_fea is not None else None
         batch_info2 = self.feature_extractor.process_batch(x, cam2, labels) if self.l_fea is not None else None
@@ -649,6 +673,7 @@ class ClsNetwork(nn.Module):
         self.text_projection = nn.Linear(512, prototype_feature_dim).float()
         
         
+<<<<<<< HEAD
         # ============== Image Prototypes (l_fea) – sẽ được refine bằng text ==============
         self.l_fea = None
         # ------------------- Hierarchical Setting -------------------
@@ -1037,4 +1062,6 @@ class ClsNetwork(nn.Module):
                 
         
 
+=======
+>>>>>>> 88f5325ab342253aaedf9e305b1b7bd67dc2eee4
 

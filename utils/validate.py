@@ -136,6 +136,7 @@ def generate_cam(model=None, data_loader=None, cfg=None):
 
     sample_count = 0
     with torch.no_grad():
+<<<<<<< HEAD
         for data in tqdm(data_loader, total=min(1000, len(data_loader)), ncols=100):
             if sample_count >= 1000: break
             name, inputs, cls_label, _ = data
@@ -144,6 +145,23 @@ def generate_cam(model=None, data_loader=None, cfg=None):
             inputs = inputs.to(device).float()
             cls_label = cls_label.to(device).float()
             b, _, h, w = inputs.shape
+=======
+        for data in tqdm(data_loader, total=min(150, len(data_loader)), ncols=100, ascii=" >="):
+            if sample_count >= 150:
+                break
+            name, inputs, cls_label, labels = data
+            if inputs is None or cls_label is None or labels is None:
+                logger.warning(f"Skipping invalid batch {name} due to None values")
+                sample_count += 1
+                continue
+            inputs = inputs.cuda().float()
+            b, c, h, w = inputs.shape
+            labels = labels.cuda()
+            cls_label = cls_label.cuda().float()
+            if cls_label.shape[1] != 4:
+                logger.error(f"Invalid cls_label shape: {cls_label.shape}. Expected [batch_size, 4]. Skipping batch.")
+                continue
+>>>>>>> 88f5325ab342253aaedf9e305b1b7bd67dc2eee4
 
             try:
                 outputs = model(inputs, labels=cls_label, cfg=cfg)
@@ -180,6 +198,7 @@ def generate_cam(model=None, data_loader=None, cfg=None):
 
                 img_denorm = ((inputs * std + mean).clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
 
+<<<<<<< HEAD
                 for i in range(b):
                     if sample_count >= 1000: break
 
@@ -193,6 +212,72 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                         logger.info(f"LYM (blue) detected in {name[i]} - BEAUTIFUL!")
                     if 3 in np.unique(mask):
                         logger.info(f"NEC (purple) detected in {name[i]}")
+=======
+                img_denorm_tensor = (inputs * std + mean).clamp(0, 1) * 255
+                img_np = img_denorm_tensor.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
+
+                                # === LƯU MASK ĐẸP + LOG KHI PHÁT HIỆN LYM/NEC ===
+                PALETTE = [
+                    255, 0, 0,      # 0: TUM - Đỏ rực
+                    0, 255, 0,      # 1: STR - Xanh lá
+                    0, 0, 255,      # 2: LYM - Xanh dương đậm (rõ nhất)
+                    180, 0, 255,    # 3: NEC - Tím đậm (đẹp hơn 153,0,255)
+                    255, 255, 255   # 4: Background - Trắng
+                ]
+
+                for i in range(b):
+                    if sample_count >= 150:  
+                        break
+                    
+                    pred_mask = pred_labels[i].cpu().numpy().astype(np.uint8)
+    
+                    # Tăng độ tương phản cho LYM (class 2) và NEC (class 3)
+                    if 2 in np.unique(pred_mask):
+                        logger.info(f"LYM (blue) detected in {name[i]} - beautiful!")
+                    if 3 in np.unique(pred_mask):
+                        logger.info(f"NEC (purple) detected in {name[i]}")
+
+                    mask_pil = Image.fromarray(pred_mask).convert('P')
+                    mask_pil.putpalette([
+                        255, 0, 0,      # 0: TUM - đỏ
+                        0, 255, 0,      # 1: STR - xanh lá
+                        0, 0, 255,      # 2: LYM - xanh dương (rõ nhất)
+                        180, 0, 255,    # 3: NEC - tím đậm (đẹp hơn 153,0,255)
+                        255, 255, 255   # 4: Background - trắng
+                    ])
+                    mask_pil.save(os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_mask.png"))
+
+                    # pred_mask_np = pred_labels[i].cpu().numpy().astype(np.uint8)
+
+                    # # Kiểm tra và log khi phát hiện LYM hoặc NEC
+                    # unique_classes = np.unique(pred_mask_np)
+                    # if 2 in unique_classes:
+                    #     logger.info(f"LYM (xanh dương) detected in {name[i]} - BEAUTIFUL!")
+                    # if 3 in unique_classes:
+                    #     logger.info(f"NEC (tím) detected in {name[i]}")
+
+                    # # Tạo và lưu mask màu chuẩn
+                    # mask_pil = Image.fromarray(pred_mask_np).convert('P')
+                    # mask_pil.putpalette(PALETTE)
+                    # mask_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_mask.png")
+                    # mask_pil.save(mask_path)
+
+                    # === HEATMAP ĐẸP: JET + overlay lên ảnh gốc ===
+                    cam_fg = full_probs_tensor[i, :4]  # Chỉ lấy 4 class foreground
+                    cam_heatmap = cam_fg.max(dim=0)[0].cpu().numpy()
+                    cam_heatmap = (cam_heatmap - cam_heatmap.min()) / (cam_heatmap.max() - cam_heatmap.min() + 1e-8)
+                    cam_heatmap = (cam_heatmap * 255).astype(np.uint8)
+                    cam_heatmap = cv2.applyColorMap(cam_heatmap, cv2.COLORMAP_JET)
+                    cam_heatmap = cv2.cvtColor(cam_heatmap, cv2.COLOR_BGR2RGB)
+
+                    # Overlay lên ảnh gốc
+                    img_overlay = cv2.addWeighted(img_np[i], 0.6, cam_heatmap, 0.4, 0)
+                    overlay_pil = Image.fromarray(img_overlay)
+                    cam_path = os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_cam.png")
+                    overlay_pil.save(cam_path)
+
+                    logger.info(f"Saved: {name[i]} → mask + beautiful JET overlay CAM")
+>>>>>>> 88f5325ab342253aaedf9e305b1b7bd67dc2eee4
 
                     # Heatmap JET overlay
                     heatmap = refined_probs[i].max(0)[0].cpu().numpy()
@@ -211,4 +296,9 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                 continue
 
     model.train()
+<<<<<<< HEAD
     return
+=======
+    torch.cuda.empty_cache()
+    return
+>>>>>>> 88f5325ab342253aaedf9e305b1b7bd67dc2eee4

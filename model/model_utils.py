@@ -378,3 +378,4 @@ def calculate_mi(x: Tensor, y: Tensor, s_x: float = 1.0, s_y: float = 1.0) -> Te
     eigv = torch.abs(torch.linalg.eigvalsh(k, UPLO='L'))
     Hxy = -torch.sum(eigv * torch.log(eigv + 1e-20))
     return Hx + Hy - Hxy
+
