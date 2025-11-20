@@ -14,10 +14,14 @@ model:
 
   
   text_prompt:
-    - "A WSI of Tumor with visually descriptive characteristics of irregularly shaped regions, dense cellularity, heterogeneous staining, and distortion of adjacent structures due to growth, as well as atypical cells, enlarged nuclei, prominent nucleoli, high nuclear-to-cytoplasmic ratio, and mitotic figures."
-    - "A WSI of Stroma with visually descriptive characteristics of fibrous connective tissue, lighter staining, low cellular density, and surrounding or infiltrating tumor areas, as well as elongated fibroblasts, collagen bundles, eosinophilic matrix, blood vessels, and occasional inflammatory cells."
-    - "A WSI of Lymphocyte with visually descriptive characteristics of small dark clusters or infiltrates, often at tumor-stroma interfaces, appearing as speckled blue-purple areas, as well as small round cells, hyperchromatic nuclei, scant cytoplasm, and clustering in immune responses."
-    - "A WSI of Necrosis with visually descriptive characteristics of pale amorphous zones, loss of structure, hypoeosinophilic appearance, and contrast with viable tissue, as well as cellular debris, karyorrhectic nuclei, cytoplasmic remnants, and infiltration by inflammatory cells."
+    # - "A WSI of Tumor with visually descriptive characteristics of irregularly shaped regions, dense cellularity, heterogeneous staining, and distortion of adjacent structures due to growth, as well as atypical cells, enlarged nuclei, prominent nucleoli, high nuclear-to-cytoplasmic ratio, and mitotic figures."
+    # - "A WSI of Stroma with visually descriptive characteristics of fibrous connective tissue, lighter staining, low cellular density, and surrounding or infiltrating tumor areas, as well as elongated fibroblasts, collagen bundles, eosinophilic matrix, blood vessels, and occasional inflammatory cells."
+    # - "A WSI of Lymphocyte with visually descriptive characteristics of small dark clusters or infiltrates, often at tumor-stroma interfaces, appearing as speckled blue-purple areas, as well as small round cells, hyperchromatic nuclei, scant cytoplasm, and clustering in immune responses."
+    # - "A WSI of Necrosis with visually descriptive characteristics of pale amorphous zones, loss of structure, hypoeosinophilic appearance, and contrast with viable tissue, as well as cellular debris, karyorrhectic nuclei, cytoplasmic remnants, and infiltration by inflammatory cells."
+    - "A WSI of Tumor with irregular shapes, dense cellularity, and heterogeneous staining."
+    - "A WSI of Stroma with fibrous tissue and low cellularity."
+    - "A WSI of Lymphocyte with small dark clusters and speckled appearance."
+    - "A WSI of Necrosis with pale amorphous zones and loss of structure."
   prototype_number: 3  # Số lượng prototype
   # k_list: [1]  # or [2, 2, 2, 2] for 4 classes with 2 subclasses each
   k_list: [1, 1, 1, 1]
@@ -38,7 +42,7 @@ work_dir:
   train_log_dir: E:\NghienCuu_WSSS\Results\train_log
 train:
   samples_per_gpu: 10
-  epoch: 1
+  max_epochs: 1
   warmup_iters: 4000
   pretrained: true
   l1: 0.0

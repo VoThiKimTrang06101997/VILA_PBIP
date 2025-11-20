@@ -1,50 +1,62 @@
-import numpy as np
 import torch
 import logging
 
 logger = logging.getLogger(__name__)
 
 class ConfusionMatrixAllClass:
-    def __init__(self, num_classes):
+    def __init__(self, num_classes=4):
         self.num_classes = num_classes
-        self.mat1 = torch.zeros((num_classes, num_classes), dtype=torch.int64, device='cuda')
-        self.mat2 = torch.zeros((num_classes, num_classes), dtype=torch.int64, device='cuda')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.mat = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=self.device)
 
-    def update(self, a, b):
-        a = a.long()
-        b = b.long()
-        if a.device != self.mat1.device:
-            logger.warning(f"Device mismatch: a on {a.device}, mat1 on {self.mat1.device}. Moving a and b to {self.mat1.device}.")
-            a = a.to(self.mat1.device)
-            b = b.to(self.mat1.device)
-        if a.device != b.device:
-            logger.warning(f"Device mismatch: a on {a.device}, b on {b.device}. Moving b to {a.device}.")
-            b = b.to(a.device)
-        if a.min() < 0 or a.max() >= self.num_classes or b.min() < 0 or b.max() >= self.num_classes:
-            logger.warning(f"Invalid class indices: a min={a.min()}, max={a.max()}, b min={b.min()}, max={b.max()}")
-            a = torch.clamp(a, 0, self.num_classes - 1)
-            b = torch.clamp(b, 0, self.num_classes - 1)
+    def update(self, pred, target):
+        """
+        pred, target: [B, H, W] hoặc [H, W] – LongTensor
+        """
+        # Đảm bảo cả hai đều trên cùng device và là Long
+        pred = pred.long().flatten()
+        target = target.long().flatten()
+
+        pred = pred.to(self.device)
+        target = target.to(self.device)
+
+        # Clamp giá trị
+        pred = torch.clamp(pred, 0, self.num_classes - 1)
+        target = torch.clamp(target, 0, self.num_classes - 1)
+
+        # Tính index cho confusion matrix
         n = self.num_classes
-        self.mat1 += torch.bincount(a.view(-1) * n + b.view(-1), minlength=n * n).reshape(n, n).to(self.mat1.device)
-        self.mat2 += torch.bincount(b.view(-1) * n + a.view(-1), minlength=n * n).reshape(n, n).to(self.mat2.device)
+        idx = target * n + pred  # [N]
+
+        # Tạo tensor 1 đúng device
+        ones = torch.ones_like(idx, dtype=torch.int64, device=self.device)
+
+        # Dùng scatter_add_ để tích lũy an toàn
+        hist = torch.zeros(n * n, dtype=torch.int64, device=self.device)
+        hist.scatter_add_(0, idx, ones)
+        self.mat += hist.view(n, n)
 
     def compute(self):
-        h = self.mat1.float()
-        acc_global = torch.nan_to_num(torch.diag(h).sum() / h.sum(), nan=0.0)
-        acc = torch.nan_to_num(torch.diag(h) / h.sum(1), nan=0.0)
-        iu = torch.nan_to_num(torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h)), nan=0.0)
-        dice_per_class = torch.nan_to_num(2 * torch.diag(h) / (h.sum(1) + h.sum(0)), nan=0.0)
-        dice_bg_fg = (dice_per_class[0] + dice_per_class[-1]) / 2
-        freq = h.sum(1) / h.sum()
+        h = self.mat.float()
+        acc_global = torch.diag(h).sum() / (h.sum() + 1e-10)
+        acc = torch.diag(h) / (h.sum(1) + 1e-10)
+        iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h) + 1e-10)
+        dice = 2 * torch.diag(h) / (h.sum(1) + h.sum(0) + 1e-10)
+
+        freq = h.sum(1) / (h.sum() + 1e-10)
         fw_iu = (freq[freq > 0] * iu[freq > 0]).sum()
+
         return (
             acc_global.item(),
             acc.cpu().numpy(),
             iu.cpu().numpy(),
-            dice_per_class.cpu().numpy(),
-            dice_bg_fg.item(),
-            fw_iu.item(),
+            dice.cpu().numpy(),
+            0.0,
+            fw_iu.item()
         )
+
+    def reset(self):
+        self.mat.zero_()
         
     def reduce_from_all_processes(self):
         if not torch.distributed.is_available():
