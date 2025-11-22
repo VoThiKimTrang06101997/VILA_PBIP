@@ -181,7 +181,7 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                 img_denorm = ((inputs * std + mean).clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
 
                 for i in range(b):
-                    if sample_count >= 00: break
+                    if sample_count >= 1000: break
 
                     # Lưu mask 4 màu
                     mask = pred[i].astype(np.uint8)
@@ -212,3 +212,5 @@ def generate_cam(model=None, data_loader=None, cfg=None):
 
     model.train()
     return
+    
+
