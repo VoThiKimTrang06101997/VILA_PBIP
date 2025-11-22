@@ -372,4 +372,3 @@ if __name__ == "__main__":
     logger.warning(f'Configs: {cfg}')
     set_seed(0)
     train(cfg=cfg)
-
