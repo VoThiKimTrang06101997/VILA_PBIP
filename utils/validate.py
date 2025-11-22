@@ -212,4 +212,3 @@ def generate_cam(model=None, data_loader=None, cfg=None):
 
     model.train()
     return
-    
