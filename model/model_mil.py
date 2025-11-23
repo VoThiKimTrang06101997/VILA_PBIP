@@ -44,7 +44,7 @@ class MIL_fc(nn.Module):
         else:
             top_instance_idx = torch.topk(y_probs.max(dim=1)[0], self.top_k, dim=0)[1].view(1,)
         top_instance = torch.index_select(logits, dim=0, index=top_instance_idx)
-        Y_hat = torch.topk(top_instance, 1, dim=1)[1].clamp(0, 4)  # Clamp to [0, 4]
+        Y_hat = torch.topk(top_instance, 1, dim=1)[1].clamp(0, 3)  # Clamp to [0, 4]
         Y_prob = F.softmax(top_instance, dim=1)
         results_dict = {}
 
@@ -88,7 +88,7 @@ class MIL_fc_mc(nn.Module):
         top_indices = torch.cat(((m // self.n_classes).view(-1, 1),
                                 (m % self.n_classes).view(-1, 1)), dim=1).view(-1, 1)
         top_instance = logits[top_indices[0]]
-        Y_hat = top_indices[1].clamp(0, 4)  # Clamp to [0, 4]
+        Y_hat = top_indices[1].clamp(0, 3)  # Clamp to [0, 4]
         Y_prob = y_probs[top_indices[0]]
         results_dict = {}
 
