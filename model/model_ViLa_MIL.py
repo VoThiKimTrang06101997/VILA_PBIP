@@ -322,31 +322,31 @@ class ViLa_MIL_Model(nn.Module):
         x4_spatial = x4.permute(0, 2, 3, 1).reshape(-1, self.D)
 
         x1_projected = self.logit_scale1 * (x1_spatial @ self.l_fea.clone().detach().to(device).t())
-        cam2 = x1_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 4)
+        cam2 = x1_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 3)
         cls2 = F.adaptive_avg_pool2d(cam2, (1, 1)).reshape(-1, self.num_classes)
 
         x2_projected = self.logit_scale2 * (x2_spatial @ self.l_fea.clone().detach().to(device).t())
-        cam3 = x2_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 4)
+        cam3 = x2_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 3)
         cls3 = F.adaptive_avg_pool2d(cam3, (1, 1)).reshape(-1, self.num_classes)
 
         x3_projected = self.logit_scale3 * (x3_spatial @ self.l_fea.clone().detach().to(device).t())
-        cam4 = x3_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 4)
+        cam4 = x3_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 3)
         cls4 = F.adaptive_avg_pool2d(cam4, (1, 1)).reshape(-1, self.num_classes)
 
         x4_projected = self.logit_scale4 * (x4_spatial @ self.l_fea.clone().detach().to(device).t())
-        cam5 = x4_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 4)
+        cam5 = x4_projected.reshape(batch_size, 224, 224, self.num_classes).permute(0, 3, 1, 2).clamp(0, 3)
         cls5 = F.adaptive_avg_pool2d(cam5, (1, 1)).reshape(-1, self.num_classes)
 
-        # Add background CAM channel
-        def add_background_cam(cam):
-            cam_max = torch.max(cam[:, :-1], dim=1, keepdim=True)[0]
-            bg_cam = (1 - cam_max) ** 10
-            return torch.cat([cam, bg_cam], dim=1)
+        # # Add background CAM channel
+        # def add_background_cam(cam):
+        #     cam_max = torch.max(cam[:, :-1], dim=1, keepdim=True)[0]
+        #     bg_cam = (1 - cam_max) ** 10
+        #     return torch.cat([cam, bg_cam], dim=1)
 
-        cam2 = add_background_cam(cam2)
-        cam3 = add_background_cam(cam3)
-        cam4 = add_background_cam(cam4)
-        cam1 = add_background_cam(cam1)
+        # cam2 = add_background_cam(cam2)
+        # cam3 = add_background_cam(cam3)
+        # cam4 = add_background_cam(cam4)
+        # cam1 = add_background_cam(cam1)
 
         # Extract ResNet features - Contrastive Loss (FG/BG):
         if labels is not None:
@@ -382,14 +382,14 @@ class ViLa_MIL_Model(nn.Module):
         if labels is not None:
             if labels.dim() == 4:
                 labels = labels.argmax(dim=1).long()
-            ce_loss = self.loss_ce(logits, labels.to(device).clamp(0, 4))
+            ce_loss = self.loss_ce(logits, labels.to(device).clamp(0, 3))
             if fg_bg_labels is not None:
                 bce_loss = self.loss_bce(fg_bg_logits_image.squeeze(1), fg_bg_labels.float().squeeze(1).to(device))
                 loss = ce_loss + bce_loss + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
             else:
                 loss = ce_loss + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
         else:
-            dummy_ce = self.loss_ce(logits, torch.zeros(batch_size, dtype=torch.long, device=device).clamp(0, 4))
+            dummy_ce = self.loss_ce(logits, torch.zeros(batch_size, dtype=torch.long, device=device).clamp(0, 3))
             dummy_bce = self.loss_bce(fg_bg_logits_image.squeeze(1), torch.zeros(batch_size, device=device))
             loss = dummy_ce + dummy_bce + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
 
@@ -412,7 +412,7 @@ class ViLa_MIL_Model(nn.Module):
                     cam = torch.cat([cam, padding], dim=1)
                 elif cam.size(1) > self.num_classes + 1:
                     cam = cam[:, :self.num_classes + 1, :, :]
-                cam = cam.clamp(0, 4)
+                cam = cam.clamp(0, 3)
 
         return cam1, cam2, cam3, cam4, label
 
