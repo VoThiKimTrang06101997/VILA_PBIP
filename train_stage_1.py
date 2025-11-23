@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 from tqdm import tqdm
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import csv
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -51,7 +51,7 @@ def cal_eta(time0, cur_iter, total_iter):
 def train(cfg):
     logger.warning("Initializing training process...")
     torch.backends.cudnn.benchmark = True
-    num_workers = min(8, os.cpu_count())  # Increase workers for full data
+    num_workers = min(1, os.cpu_count())  # Increase workers for full data
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     logger.warning(f"Using device: {device}")
     set_seed(0)
@@ -78,6 +78,10 @@ def train(cfg):
         logger.error(f"Dataset loading failed: {str(e)}")
         return
 
+    # max_samples = 200
+    # train_dataset = Subset(train_dataset, range(min(max_samples, len(train_dataset))))
+    # val_dataset = Subset(val_dataset, range(min(max_samples, len(val_dataset))))
+    
     # Removed max_samples to train on full dataset
     logger.warning(f"Training with FULL dataset: {len(train_dataset)} samples")
     logger.warning(f"Validating with FULL dataset: {len(val_dataset)} samples")
@@ -197,23 +201,44 @@ def train(cfg):
             if inputs is None or cls_labels is None:
                 continue
 
+            # ================= FIX CHẮC CHẮN NHẤT – LÀM SẠCH HOÀN TOÀN TRƯỚC KHI TO(DEVICE) =================
+            # 1. cls_labels: ép về [0,1]
+            cls_labels = torch.nan_to_num(cls_labels, nan=0.0)
+            cls_labels = torch.clamp(cls_labels, 0.0, 1.0)
+
+            # 2. gt_label: ÉP SANG FLOAT TRƯỚC, SAU ĐÓ THAY 255 → 0, RỒI CLAMP 0-3
+            # Sau khi lấy batch:
+            if gt_label is not None and gt_label.numel() > 0:
+                gt_label = gt_label.cpu()
+                gt_label = torch.where(gt_label == 255, torch.zeros_like(gt_label), gt_label)
+                if gt_label.dim() == 4:
+                    gt_label = gt_label.argmax(1)
+                gt_label = torch.clamp(gt_label, 0, 3).long()
+                gt_label = gt_label.to(device)
+
+            # BÂY GIỜ MỚI TO(DEVICE) – AN TOÀN 100%
             inputs = inputs.to(device).float()
-            cls_labels = torch.clamp(torch.nan_to_num(cls_labels, nan=0.0, posinf=1.0, neginf=0.0), 0, 1).to(device).float()
+            cls_labels = cls_labels.to(device).float()
+            if gt_label is not None:
+                gt_label = gt_label.to(device)
 
             with torch.amp.autocast('cuda'):
                 try:
-                    (cls1, cam1, cls2, cam2, cls3, cam3, cls4, cam4, l_fea, backbone_loss, fg_bg_prob, k_list, feature_map_for_diversity) = model(inputs, labels=cls_labels, cfg=cfg)
+                    (cls1, cam1, cls2, cam2, cls3, cam3, cls4, cam4, 
+                    l_fea, backbone_loss, fg_bg_prob, k_list, feature_map_for_diversity) = model(inputs, labels=cls_labels, cfg=cfg)
                 except Exception as e:
                     logger.error(f"Model forward error: {e}")
                     continue
 
-                k_list = config_k_list  # Dùng config để ổn định
+                k_list = config_k_list  # Ổn định k_list
 
+                # Merge về 4 class
                 cls1_merge = merge_to_parent_predictions(cls1, k_list, method="mean")
                 cls2_merge = merge_to_parent_predictions(cls2, k_list, method="mean")
                 cls3_merge = merge_to_parent_predictions(cls3, k_list, method="mean")
                 cls4_merge = merge_to_parent_predictions(cls4, k_list, method="mean")
 
+                # Chỉ lấy 4 kênh đầu tiên
                 loss1 = loss_function(cls1_merge[:, :4], cls_labels)
                 loss2 = loss_function(cls2_merge[:, :4], cls_labels)
                 loss3 = loss_function(cls3_merge[:, :4], cls_labels)
@@ -222,30 +247,24 @@ def train(cfg):
 
                 if n_iter >= cfg.train.warmup_iters:
                     try:
-                        subclass_labels = expand_parent_to_subclass_labels(cls_labels, k_list)
-                        cls4_expand = expand_parent_to_subclass_labels(cls4_merge, k_list)
                         batch_info = model.feature_extractor.process_batch(inputs, cam2, cls_labels)
+                        contrastive_loss = torch.tensor(0.0, device=device)
                         if batch_info and batch_info['fg_img_features'] is not None:
                             fg_features, bg_features = batch_info['fg_img_features'], batch_info['bg_features']
                             set_info = pair_features(fg_features, bg_features, l_fea, cls_labels)
-                            fg_features, bg_features, fg_pro, bg_pro = set_info['fg_features'], set_info['bg_features'], set_info['fg_text'], set_info['bg_text']
+                            fg_pro, bg_pro = set_info['fg_text'], set_info['bg_text']
                             fg_loss = fg_loss_fn(fg_features, fg_pro, bg_pro)
                             bg_loss = bg_loss_fn(bg_features, fg_pro, bg_pro)
                             contrastive_loss = fg_loss + bg_loss
-                        else:
-                            contrastive_loss = torch.tensor(0.0, device=device)
 
-                        with torch.no_grad():
-                            unified_cam_merged = merge_subclass_cams_to_parent(cam1, k_list, method="mean")
-                            cam_max, _ = torch.max(unified_cam_merged, dim=1, keepdim=True)
-                            background_score = torch.full_like(cam_max, 0.2)
-                            full_cam = torch.cat([background_score, unified_cam_merged], dim=1)
-                            pseudo_mask = torch.argmax(full_cam, dim=1)
-                        pseudo_mask_resized = F.interpolate(pseudo_mask.unsqueeze(1).long(), size=feature_map_for_diversity.shape[2:], mode='nearest').squeeze(1)
-                        diversity_loss = diversity_loss_fn(feature_map_for_diversity, l_fea, pseudo_mask_resized)
+                        # Diversity loss
+                        l_fea_div = model.prototype_to_diversity(l_fea)  # [4, 64]
+                        diversity_loss = attention_diversity(l_fea_div, feature_map_for_diversity, num_heads=8)
+
                         loss = cls_loss + 0.25 * diversity_loss + 0.5 * contrastive_loss
+
                     except Exception as e:
-                        logger.error(f"Error in warm-up phase: {e}. Falling back to cls_loss.")
+                        logger.error(f"Warm-up phase error: {e}. Using cls_loss only.")
                         loss = cls_loss
                 else:
                     loss = cls_loss
@@ -360,6 +379,9 @@ def train(cfg):
     logger.warning(f"File CSV tổng hợp: {csv_train}")
 
 if __name__ == "__main__":
+    import torch.multiprocessing as mp
+    mp.set_start_method('spawn', force=True)  # ← QUAN TRỌNG NHẤT!
+    
     cfg = OmegaConf.load(args.config)
     cfg.work_dir.dir = os.path.dirname(args.config)
     timestamp = "{0:%Y-%m-%d-%H-%M}".format(datetime.datetime.now())
@@ -372,5 +394,4 @@ if __name__ == "__main__":
     logger.warning(f'Configs: {cfg}')
     set_seed(0)
     train(cfg=cfg)
-
 
