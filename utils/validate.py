@@ -16,6 +16,7 @@ from utils.fgbg_feature import FeatureExtractor, MaskAdapter_DynamicThreshold
 
 logger = logging.getLogger(__name__)
 
+
 def get_seg_label(cams, inputs, cls_label):
     """
     Input: cams [B, >=4, H, W], inputs [B,3,H,W], cls_label [B,4]
@@ -29,7 +30,8 @@ def get_seg_label(cams, inputs, cls_label):
         if cams.size(1) >= 4:
             cams = cams[:, :4]
         else:
-            pad = torch.zeros((cams.size(0), 4 - cams.size(1), cams.size(2), cams.size(3)), device=device)
+            pad = torch.zeros((cams.size(0), 4 - cams.size(1),
+                              cams.size(2), cams.size(3)), device=device)
             cams = torch.cat([cams, pad], dim=1)
 
         # Normalize từng class có nhãn
@@ -47,7 +49,8 @@ def get_seg_label(cams, inputs, cls_label):
         cams = cams * cls_label.unsqueeze(2).unsqueeze(3)  # [B,4,1,1]
 
         # Resize về kích thước ảnh gốc
-        cams = F.interpolate(cams, size=(h, w), mode='bilinear', align_corners=True)
+        cams = F.interpolate(cams, size=(
+            h, w), mode='bilinear', align_corners=True)
 
         pred = torch.argmax(cams, dim=1)  # [B, H, W]
         return cams, pred
@@ -88,12 +91,26 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
                 pred = torch.argmax(fuse, dim=1)  # [B, H, W]
 
                 # Xử lý ground truth
-                if labels.dim() > 3:
-                    labels = labels.squeeze(1) if labels.size(1) == 1 else labels.argmax(1)
-                elif labels.dim() == 2:
-                    labels = labels.view(b, h, w)
-
-                labels = labels.long().clamp(0, 3).to(device)
+                if labels is not None and labels.numel() > 0:
+                    # Chuyển về CPU trước để xử lý an toàn
+                    labels = labels.cpu()
+                    
+                    # Nếu là mask cũ có 255 → thay thành 0
+                    labels = torch.where(labels == 255, torch.zeros_like(labels), labels)
+                    
+                    # Nếu là one-hot → argmax
+                    if labels.dim() == 4 and labels.size(1) == 4:
+                        labels = labels.argmax(1)
+                    elif labels.dim() == 3 and labels.size(1) == 1:
+                        labels = labels.squeeze(1)
+                    
+                    # Ép về 0-3
+                    labels = torch.clamp(labels, 0, 3).long()
+                    
+                    # Mới đưa lên GPU
+                    labels = labels.to(device)
+                else:
+                    labels = torch.zeros(b, h, w, dtype=torch.long, device=device)
 
                 # Cập nhật confusion matrix (batch-wise để tránh lỗi device)
                 for i in range(b):
@@ -108,7 +125,8 @@ def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
     mIoU = np.nan_to_num(iu.mean() * 100)
     mean_dice = np.nan_to_num(dice.mean() * 100)
 
-    logger.warning(f"Validation → mIoU: {mIoU:.2f}% | Mean Dice: {mean_dice:.2f}%")
+    logger.warning(
+        f"Validation → mIoU: {mIoU:.2f}% | Mean Dice: {mean_dice:.2f}%")
 
     model.train()
     return mIoU, mean_dice, 0.0, iu.tolist(), dice.tolist()
@@ -133,13 +151,16 @@ def generate_cam(model=None, data_loader=None, cfg=None):
     crf.load_config(crf_config_path)
 
     PALETTE = [255,0,0, 0,255,0, 0,0,255, 180,0,255]  # TUM, STR, LYM, NEC
-
+    # PALETTE = [255,255,255, 255,0,0, 0,255,0, 0,0,255, 180,0,255]  # BACK, TUM, STR, LYM, NEC
+    
     sample_count = 0
     with torch.no_grad():
-        for data in tqdm(data_loader, total=min(1000, len(data_loader)), ncols=100):
-            if sample_count >= 1000: break
+        for data in tqdm(data_loader, total=min(200, len(data_loader)), ncols=100):
+            if sample_count >= 200:
+                break
             name, inputs, cls_label, _ = data
-            if inputs is None: continue
+            if inputs is None:
+                continue
 
             inputs = inputs.to(device).float()
             cls_label = cls_label.to(device).float()
@@ -147,7 +168,8 @@ def generate_cam(model=None, data_loader=None, cfg=None):
 
             try:
                 outputs = model(inputs, labels=cls_label, cfg=cfg)
-                if len(outputs) != 13: continue
+                if len(outputs) != 13:
+                    continue
                 _, _, _, cam2, _, cam3, _, cam4, _, _, _, k_list, _ = outputs
 
                 cam2 = cam2[:, :4] if cam2.size(1) >= 4 else cam2
@@ -162,14 +184,16 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                 probs = F.softmax(fuse, dim=1)
 
                 # CRF trên CPU (ổn định nhất)
-                img_np = ((inputs * std + mean).clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+                img_np = ((inputs * std + mean).clamp(0,
+                          1).cpu().numpy() * 255).astype(np.uint8)
                 probs_np = probs.cpu().numpy()
                 crf_out = []
                 for i in range(b):
                     p = probs_np[i]
-                    img = img_np[i].transpose(1,2,0)
+                    img = img_np[i].transpose(1, 2, 0)
                     try:
-                        _, refined = crf.process(p[np.newaxis, :4], img[np.newaxis, :])
+                        _, refined = crf.process(
+                            p[np.newaxis, :4], img[np.newaxis, :])
                         crf_out.append(refined[0])
                     except:
                         crf_out.append(p[:4])
@@ -178,32 +202,40 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                 refined_probs = F.softmax(refined_probs, dim=1)
                 pred = torch.argmax(refined_probs, dim=1).cpu().numpy()
 
-                img_denorm = ((inputs * std + mean).clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+                img_denorm = ((inputs * std + mean).clamp(0,
+                              1).cpu().numpy() * 255).astype(np.uint8)
 
                 for i in range(b):
-                    if sample_count >= 1000: break
+                    if sample_count >= 200:
+                        break
 
                     # Lưu mask 4 màu
                     mask = pred[i].astype(np.uint8)
                     mask_pil = Image.fromarray(mask).convert('P')
                     mask_pil.putpalette(PALETTE)
-                    mask_pil.save(os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_mask.png"))
+                    mask_pil.save(os.path.join(
+                        cfg.work_dir.pred_dir, f"{name[i]}_mask.png"))
 
                     if 2 in np.unique(mask):
-                        logger.info(f"LYM (blue) detected in {name[i]} - BEAUTIFUL!")
+                        logger.info(
+                            f"LYM (blue) detected in {name[i]} - BEAUTIFUL!")
                     if 3 in np.unique(mask):
                         logger.info(f"NEC (purple) detected in {name[i]}")
 
                     # Heatmap JET overlay
                     heatmap = refined_probs[i].max(0)[0].cpu().numpy()
-                    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+                    heatmap = (heatmap - heatmap.min()) / \
+                        (heatmap.max() - heatmap.min() + 1e-8)
                     heatmap = (heatmap * 255).astype(np.uint8)
                     heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
                     heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-                    overlay = cv2.addWeighted(img_denorm[i].transpose(1,2,0), 0.6, heatmap, 0.4, 0)
-                    Image.fromarray(overlay).save(os.path.join(cfg.work_dir.pred_dir, f"{name[i]}_cam.png"))
+                    overlay = cv2.addWeighted(
+                        img_denorm[i].transpose(1, 2, 0), 0.6, heatmap, 0.4, 0)
+                    Image.fromarray(overlay).save(os.path.join(
+                        cfg.work_dir.pred_dir, f"{name[i]}_cam.png"))
 
-                    logger.info(f"Saved: {name[i]} → 4-color mask + JET overlay")
+                    logger.info(
+                        f"Saved: {name[i]} → 4-color mask + JET overlay")
                     sample_count += 1
 
             except Exception as e:
@@ -212,5 +244,4 @@ def generate_cam(model=None, data_loader=None, cfg=None):
 
     model.train()
     return
-    
 
