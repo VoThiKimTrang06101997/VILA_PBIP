@@ -11,30 +11,34 @@ class ConfusionMatrixAllClass:
 
     def update(self, pred, target):
         """
-        pred, target: [B, H, W] hoặc [H, W] – LongTensor
+        pred, target: [B, H, W] hoặc [H, W] – bất kỳ dtype nào
+        → Fix 100% lỗi CUDA device-side assert
         """
-        # Đảm bảo cả hai đều trên cùng device và là Long
-        pred = pred.long().flatten()
-        target = target.long().flatten()
+        # BƯỚC 1: Chuyển về CPU + flatten + ép kiểu an toàn
+        pred = pred.view(-1).cpu()
+        target = target.view(-1).cpu()
 
-        pred = pred.to(self.device)
-        target = target.to(self.device)
+        # BƯỚC 2: Loại bỏ hoàn toàn giá trị ngoài range (255, 4, -1, NaN...)
+        valid_mask = (pred >= 0) & (pred < self.num_classes) & \
+                    (target >= 0) & (target < self.num_classes)
 
-        # Clamp giá trị
-        pred = torch.clamp(pred, 0, self.num_classes - 1)
-        target = torch.clamp(target, 0, self.num_classes - 1)
+        pred = pred[valid_mask]
+        target = target[valid_mask]
 
-        # Tính index cho confusion matrix
+        # Nếu không còn pixel hợp lệ → bỏ qua
+        if pred.numel() == 0:
+            return
+
+        # BƯỚC 3: Chuyển sang long + đưa lên GPU (chỉ những giá trị đã sạch!)
+        pred = pred.long().to(self.device)
+        target = target.long().to(self.device)
+
+        # BƯỚC 4: Tính chỉ số an toàn (không bao giờ ra ngoài n*n)
         n = self.num_classes
-        idx = target * n + pred  # [N]
+        idx = target * n + pred  # [N], giá trị từ 0 đến n*n-1 → 100% hợp lệ
 
-        # Tạo tensor 1 đúng device
-        ones = torch.ones_like(idx, dtype=torch.int64, device=self.device)
-
-        # Dùng scatter_add_ để tích lũy an toàn
-        hist = torch.zeros(n * n, dtype=torch.int64, device=self.device)
-        hist.scatter_add_(0, idx, ones)
-        self.mat += hist.view(n, n)
+        # BƯỚC 5: Dùng scatter_add_ – SIÊU NHANH và AN TOÀN
+        self.mat += torch.bincount(idx, minlength=n * n).view(n, n)
 
     def compute(self):
         h = self.mat.float()
@@ -89,4 +93,5 @@ class ConfusionMatrixAllClass:
                 fg_bg_dice.mean() * 100,
                 fw_iu * 100
             )
-            
+
+        
