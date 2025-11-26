@@ -54,82 +54,78 @@ def get_seg_label(cams, inputs, cls_label):
 
         pred = torch.argmax(cams, dim=1)  # [B, H, W]
         return cams, pred
+    
+
+
+def safe_clean_label(label_tensor, device, max_val=3):
+    if label_tensor is None or label_tensor.numel() == 0:
+        return None
+    # Chuyển về CPU trước
+    x = label_tensor.cpu()
+    # Xóa mọi giá trị không hợp lệ
+    x = torch.where((x >= 255) | (x > max_val) | (x < 0), torch.zeros_like(x), x)
+    # Nếu là one-hot → argmax
+    if x.dim() == 4:
+        if x.size(1) == 4:
+            x = x.argmax(1)
+        elif x.size(1) == 1:
+            x = x.squeeze(1)
+    # Clamp + long + to device
+    x = torch.clamp(x, 0, max_val).long().to(device)
+    return x
 
 
 def validate(model=None, data_loader=None, cfg=None, cls_loss_func=None):
     model.eval()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = next(model.parameters()).device
     matrix = ConfusionMatrixAllClass(num_classes=4)  # Chỉ 4 class
 
     with torch.no_grad():
-        for data in tqdm(data_loader, total=len(data_loader), ncols=100, ascii=" >="):
+        for data in tqdm(data_loader, desc="Validating", leave=False):
             name, inputs, cls_label, labels = data
-
-            inputs = inputs.to(device).float()
+            inputs = inputs.to(device)
             cls_label = cls_label.to(device).float()
-            b, _, h, w = inputs.shape
 
             try:
                 outputs = model(inputs, labels=cls_label, cfg=cfg)
-                if len(outputs) != 13:
+                if len(outputs) < 13:
                     continue
-
                 _, _, _, cam2, _, cam3, _, cam4, _, _, _, k_list, _ = outputs
 
-                # Chỉ lấy 4 kênh
-                cam2 = cam2[:, :4] if cam2.size(1) >= 4 else cam2
-                cam3 = cam3[:, :4] if cam3.size(1) >= 4 else cam3
-                cam4 = cam4[:, :4] if cam4.size(1) >= 4 else cam4
+                cam2 = cam2[:, :4]
+                cam3 = cam3[:, :4]
+                cam4 = cam4[:, :4]
 
-                # Tạo pseudo-label từ từng scale
-                cam2, _ = get_seg_label(cam2, inputs, cls_label)
-                cam3, _ = get_seg_label(cam3, inputs, cls_label)
-                cam4, _ = get_seg_label(cam4, inputs, cls_label)
+                c2, _ = get_seg_label(cam2, inputs, cls_label)
+                c3, _ = get_seg_label(cam3, inputs, cls_label)
+                c4, _ = get_seg_label(cam4, inputs, cls_label)
 
-                # Fuse 3 scale
-                fuse = 0.3 * cam2 + 0.3 * cam3 + 0.4 * cam4
-                pred = torch.argmax(fuse, dim=1)  # [B, H, W]
+                fuse = 0.3*c2 + 0.3*c3 + 0.4*c4
+                pred = torch.argmax(fuse, dim=1)  # [B,H,W]
 
-                # Xử lý ground truth
-                if labels is not None and labels.numel() > 0:
-                    # Chuyển về CPU trước để xử lý an toàn
-                    labels = labels.cpu()
-                    
-                    # Nếu là mask cũ có 255 → thay thành 0
-                    labels = torch.where(labels == 255, torch.zeros_like(labels), labels)
-                    
-                    # Nếu là one-hot → argmax
-                    if labels.dim() == 4 and labels.size(1) == 4:
-                        labels = labels.argmax(1)
-                    elif labels.dim() == 3 and labels.size(1) == 1:
-                        labels = labels.squeeze(1)
-                    
-                    # Ép về 0-3
-                    labels = torch.clamp(labels, 0, 3).long()
-                    
-                    # Mới đưa lên GPU
-                    labels = labels.to(device)
-                else:
-                    labels = torch.zeros(b, h, w, dtype=torch.long, device=device)
+                # FIX CUỐI CÙNG – AN TOÀN TUYỆT ĐỐI
+                labels = safe_clean_label(labels, device, max_val=3)
 
-                # Cập nhật confusion matrix (batch-wise để tránh lỗi device)
-                for i in range(b):
-                    matrix.update(pred[i], labels[i])
+                if labels is None:
+                    continue
+
+                # Cập nhật từng ảnh một để tránh lỗi
+                for p, l in zip(pred, labels):
+                    matrix.update(p, l)
 
             except Exception as e:
-                logger.error(f"Validation error: {e}")
+                logger.error(f"Val error: {e}")
                 continue
 
-    # Tính metric
     _, _, iu, dice, _, _ = matrix.compute()
-    mIoU = np.nan_to_num(iu.mean() * 100)
-    mean_dice = np.nan_to_num(dice.mean() * 100)
-
+    mIoU = np.nanmean(iu) * 100
+    mDice = np.nanmean(dice) * 100
+    
     logger.warning(
-        f"Validation → mIoU: {mIoU:.2f}% | Mean Dice: {mean_dice:.2f}%")
-
+        f"Validation → mIoU: {mIoU:.2f}% | Mean Dice: {mDice:.2f}%")
+        
     model.train()
-    return mIoU, mean_dice, 0.0, iu.tolist(), dice.tolist()
+    return mIoU, mDice, 0.0, iu.tolist(), dice.tolist()
 
 
 # ===================================================================
@@ -155,8 +151,8 @@ def generate_cam(model=None, data_loader=None, cfg=None):
     
     sample_count = 0
     with torch.no_grad():
-        for data in tqdm(data_loader, total=min(200, len(data_loader)), ncols=100):
-            if sample_count >= 200:
+        for data in tqdm(data_loader, total=min(500, len(data_loader)), ncols=100):
+            if sample_count >= 500:
                 break
             name, inputs, cls_label, _ = data
             if inputs is None:
@@ -206,7 +202,7 @@ def generate_cam(model=None, data_loader=None, cfg=None):
                               1).cpu().numpy() * 255).astype(np.uint8)
 
                 for i in range(b):
-                    if sample_count >= 200:
+                    if sample_count >= 500:
                         break
 
                     # Lưu mask 4 màu
