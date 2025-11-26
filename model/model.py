@@ -298,18 +298,29 @@ class ClsNetwork(nn.Module):
             self.attention_net4 = Attn_Net_Gated(in_channels=self.in_channels[3], D=256, dropout=False, n_classes=self.total_classes, num_patches=num_patches4).to(self.device)
 
         # -------------------Attention Weights: Attention + Weighted features A1–A4 -------------------
-        A1, x1 = self.attention_net1(_x1)  # [B, N, total_subclasses]
-        A2, x2 = self.attention_net2(_x2)
-        A3, x3 = self.attention_net3(_x3)
-        A4, x4 = self.attention_net4(_x4)
-
+        # A1, x1 = self.attention_net1(_x1)  # [B, N, total_subclasses]
+        # A2, x2 = self.attention_net2(_x2)
+        # A3, x3 = self.attention_net3(_x3)
+        # A4, x4 = self.attention_net4(_x4)
+       
+        A1 = torch.ones(batch_size, _x1.size(1), self.total_classes, device=device) / self.total_classes
+        A2 = torch.ones(batch_size, _x2.size(1), self.total_classes, device=device) / self.total_classes
+        A3 = torch.ones(batch_size, _x3.size(1), self.total_classes, device=device) / self.total_classes
+        A4 = torch.ones(batch_size, _x4.size(1), self.total_classes, device=device) / self.total_classes
+        
         A1, A2, A3, A4 = [F.softmax(A, dim=1) for A in [A1, A2, A3, A4]]
 
         # ------------------- 4. Weighted features -------------------
-        _x1_weighted = torch.bmm(A1.transpose(1, 2), _x1)
-        _x2_weighted = torch.bmm(A2.transpose(1, 2), _x2)
-        _x3_weighted = torch.bmm(A3.transpose(1, 2), _x3)
-        _x4_weighted = torch.bmm(A4.transpose(1, 2), _x4)
+        # _x1_weighted = torch.bmm(A1.transpose(1, 2), _x1)
+        # _x2_weighted = torch.bmm(A2.transpose(1, 2), _x2)
+        # _x3_weighted = torch.bmm(A3.transpose(1, 2), _x3)
+        # _x4_weighted = torch.bmm(A4.transpose(1, 2), _x4)
+        
+        # Và x1, x2, x3, x4 = weighted features → thay bằng mean pooling
+        _x1_weighted = _x1.mean(dim=1, keepdim=True).expand(-1, _x1.size(1), -1)
+        _x2_weighted = _x2.mean(dim=1, keepdim=True).expand(-1, _x2.size(1), -1)
+        _x3_weighted = _x3.mean(dim=1, keepdim=True).expand(-1, _x3.size(1), -1)
+        _x4_weighted = _x4.mean(dim=1, keepdim=True).expand(-1, _x4.size(1), -1)
         
         logger.debug(f"A1 shape: {A1.shape}, _x1 shape: {_x1.shape}, num_patches1: {num_patches1}")
         logger.debug(f"A2 shape: {A2.shape}, _x2 shape: {_x2.shape}, num_patches2: {num_patches2}")
@@ -416,7 +427,8 @@ class ClsNetwork(nn.Module):
         
         # Project l_fea_final về không gian của _x1 (scale 1, channel=64)
         l_fea_for_diversity = self.prototype_to_diversity(l_fea_final)  # [4, 512] → [4, 64]
-        diversity_loss = attention_diversity(l_fea_for_diversity, _x1, num_heads=8)
+        # diversity_loss = attention_diversity(l_fea_for_diversity, _x1, num_heads=8)
+        diversity_loss = torch.tensor(0.0, device=device)   # DIVERSITY = 0
 
         # ------------------- Hierarchical merge (subclass → parent) -------------------
         merge_method = getattr(cfg.train, 'merge_train', 'mean') if cfg and hasattr(cfg.train, 'merge_train') else 'mean'
@@ -508,7 +520,7 @@ class ClsNetwork(nn.Module):
         loss = torch.tensor(0.0, device=device)
         if labels is not None:
             loss = self.loss_bce(cls4_merge, labels.float())
-        loss = loss + 0.25 * diversity_loss
+        # loss = loss + 0.25 * diversity_loss
 
         return (cls1_merge, cam1_merge,
         cls2_merge, cam2_merge,
@@ -516,3 +528,4 @@ class ClsNetwork(nn.Module):
         cls4_merge, cam4_merge,
         l_fea_final, loss, sim_i2t, self.k_list, _x1)
                 
+
