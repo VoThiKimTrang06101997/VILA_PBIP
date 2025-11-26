@@ -41,6 +41,10 @@ def merge_subclass_cams_to_parent(cams, k_list, method='max'):
         for i in range(len(k_list)):
             s, e = cumsum_k[i], min(cumsum_k[i+1], cams.shape[1])
             sub = cams[:, s:e]
+            if sub.size(1) == 0:
+                logger.warning(f"Empty sub slice for class {i}. Using zero tensor.")
+                parent_cams.append(torch.zeros(cams.size(0), 1, cams.size(2), cams.size(3), device=cams.device))
+                continue
             if method == 'max':
                 parent_cams.append(torch.max(sub, dim=1, keepdim=True)[0])
             else:
@@ -72,6 +76,10 @@ def merge_to_parent_predictions(predictions, k_list, method='max'):
         for i in range(len(k_list)):
             s, e = cumsum_k[i], min(cumsum_k[i+1], predictions.shape[1])
             sub = predictions[:, s:e]
+            if sub.size(1) == 0:
+                logger.warning(f"Empty sub slice for class {i}. Using zero tensor.")
+                parent_preds.append(torch.zeros(predictions.size(0), 1, device=predictions.device))
+                continue
             if method == 'max':
                 parent_preds.append(torch.max(sub, dim=1, keepdim=True)[0])
             else:
@@ -90,3 +98,5 @@ def expand_parent_to_subclass_labels(parent_labels, k_list):
         for _ in range(n_subclasses):
             subclass_labels.append(parent_labels[:, i:i+1])
     return torch.cat(subclass_labels, dim=1)
+
+
