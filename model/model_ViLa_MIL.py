@@ -375,23 +375,81 @@ class ViLa_MIL_Model(nn.Module):
             attention_loss = F.cross_entropy(attention_weights, cls_targets)
 
         # ------------------- Diversity Loss -------------------
-        diversity_loss = attention_diversity(self.learnable_image_center, features, num_heads=8)
-
+        # diversity_loss = attention_diversity(self.learnable_image_center, features, num_heads=8)
+        diversity_loss = torch.tensor(0.0, device=features.device)  # DIVERSITY = 0
+        
         # ------------------- Final Loss -------------------
-        loss = None
+        # loss = None
+        # if labels is not None:
+        #     if labels.dim() == 4:
+        #         labels = labels.argmax(dim=1).long()
+        #     ce_loss = self.loss_ce(logits, labels.to(device).clamp(0, 3))
+        #     if fg_bg_labels is not None:
+        #         bce_loss = self.loss_bce(fg_bg_logits_image.squeeze(1), fg_bg_labels.float().squeeze(1).to(device))
+        #         loss = ce_loss + bce_loss + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
+        #         loss = ce_loss + bce_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)  # BỎ DIVERSITY
+        #     else:
+        #         loss = ce_loss + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
+        # else:
+        #     dummy_ce = self.loss_ce(logits, torch.zeros(batch_size, dtype=torch.long, device=device).clamp(0, 3))
+        #     dummy_bce = self.loss_bce(fg_bg_logits_image.squeeze(1), torch.zeros(batch_size, device=device))
+        #     loss = dummy_ce + dummy_bce + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
+        
+        # ------------------- Final Loss -------------------
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+
+        # === Classification Loss (CE) - luôn có ===
         if labels is not None:
             if labels.dim() == 4:
-                labels = labels.argmax(dim=1).long()
-            ce_loss = self.loss_ce(logits, labels.to(device).clamp(0, 3))
-            if fg_bg_labels is not None:
-                bce_loss = self.loss_bce(fg_bg_logits_image.squeeze(1), fg_bg_labels.float().squeeze(1).to(device))
-                loss = ce_loss + bce_loss + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
+                cls_target = labels.argmax(dim=1)
+            elif labels.dim() == 2:
+                cls_target = labels
             else:
-                loss = ce_loss + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
+                cls_target = labels.squeeze()
+
+            # Clamp để tránh index out of bounds
+            cls_target = torch.clamp(cls_target, 0, self.num_classes - 1)
+
+            ce_loss = self.loss_ce(logits, cls_target)
+            loss = loss + ce_loss
         else:
-            dummy_ce = self.loss_ce(logits, torch.zeros(batch_size, dtype=torch.long, device=device).clamp(0, 3))
-            dummy_bce = self.loss_bce(fg_bg_logits_image.squeeze(1), torch.zeros(batch_size, device=device))
-            loss = dummy_ce + dummy_bce + 0.25 * diversity_loss + 0.1 * attention_loss + 0.5 * (fg_loss + bg_loss)
+            # Dummy CE loss (inference mode)
+            dummy_target = torch.zeros(batch_size, dtype=torch.long, device=device)
+            dummy_ce = self.loss_ce(logits, dummy_target)
+            loss = loss + dummy_ce
+
+        # === FG/BG Loss (BCE) - nếu có ===
+        if fg_bg_labels is not None:
+            try:
+                bce_loss = self.loss_bce(
+                    fg_bg_logits_image.squeeze(1),
+                    fg_bg_labels.float().squeeze(1)
+                )
+                loss = loss + bce_loss
+            except:
+                pass  # Bỏ qua nếu lỗi shape
+
+        # === Contrastive Loss (FG/BG) - chỉ dùng nếu có feature hợp lệ ===
+        if (fg_loss.numel() > 0 and not torch.isnan(fg_loss) and not torch.isinf(fg_loss) and
+            bg_loss.numel() > 0 and not torch.isnan(bg_loss) and not torch.isinf(bg_loss)):
+            try:
+                loss = loss + 0.5 * (fg_loss + bg_loss)
+            except:
+                pass
+
+        # === Attention Loss - an toàn tuyệt đối ===
+        if attention_loss.numel() > 0 and not torch.isnan(attention_loss) and not torch.isinf(attention_loss):
+            try:
+                loss = loss + 0.1 * attention_loss
+            except:
+                pass
+
+        # === DIVERSITY LOSS = 0 HOÀN TOÀN → KHÔNG BAO GIỜ GÂY CRASH ===
+        # → Đã tắt tại nguồn trong model.py rồi, ở đây chỉ để chắc chắn
+        # diversity_loss = torch.tensor(0.0, device=device, requires_grad=True)
+        # loss = loss + 0.25 * diversity_loss  # ← VÔ HIỆU HÓA
+
+            return loss
 
         return cls2, cam1, cls3, cam2, cls4, cam3, cls5, cam4, self.l_fea, loss, fg_bg_prob, self.k_list
 
@@ -440,4 +498,5 @@ class ViLa_MIL_Model(nn.Module):
             seg[:, c] = (cams_tensor[:, c] > threshold).float()
         seg[:, -1] = (bg_cam.squeeze(1) > threshold).float()
         return seg
+
 
