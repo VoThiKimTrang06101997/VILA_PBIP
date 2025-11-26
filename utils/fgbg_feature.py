@@ -128,12 +128,16 @@ class FeatureExtractor:
                 bg_idx = torch.tensor([0], device=device)
 
             # FG feature
-            fg_feat = feat_flat[i:i+1, :, fg_idx]  # [1, C, N_fg]
-            fg_feat = fg_feat.mean(dim=2) if fg_feat.size(2) > 0 else torch.zeros(1, C, device=device)
+            if fg_idx.numel() > 0:
+                fg_feat = feat_flat[i:i+1, :, fg_idx].mean(dim=2)
+            else:
+                fg_feat = torch.zeros(1, C, device=device)
 
             # BG feature
-            bg_feat = feat_flat[i:i+1, :, bg_idx]
-            bg_feat = bg_feat.mean(dim=2) if bg_feat.size(2) > 0 else torch.zeros(1, C, device=device)
+            if bg_idx.numel() > 0:
+                bg_feat = feat_flat[i:i+1, :, bg_idx].mean(dim=2)
+            else:
+                bg_feat = torch.zeros(1, C, device=device)
 
             fg_features_list.append(fg_feat)
             bg_features_list.append(bg_feat)
@@ -158,4 +162,4 @@ class FeatureExtractor:
         logger.info(f"CAM shape: {batch_info['cam_224'].shape}")
         logger.info(f"Mask shape: {batch_info['cam_224_mask'].shape}")
         logger.info(f"Mask mean: {batch_info['cam_224_mask'].mean().item():.4f}")
-        
+
