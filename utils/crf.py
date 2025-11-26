@@ -117,4 +117,4 @@ class DenseCRF:
 
         logger.debug(f"CRF output shapes - maxconf_crf: {maxconf_crf.shape}, crf: {crf.shape}")
         return maxconf_crf, crf
-    
+
